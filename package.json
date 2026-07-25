@@ -1,0 +1,14 @@
+{
+  "name": "frappuccino-api",
+  "version": "1.0.0",
+  "description": "Frappuccino API",
+  "main": "api/v1/ping.js",
+  "scripts": {
+    "start": "node api/v1/ping.js",
+    "dev": "vercel dev"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vercel": "^32.0.0"
+  }
+}
