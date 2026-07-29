@@ -1,4 +1,4 @@
-// server.js (Vercel-compatible version with fixed error handling)
+// server.js (Vercel-compatible version with fix)
 const express = require('express');
 const axios = require('axios');
 
@@ -15,15 +15,17 @@ if (!GROUP_ID) console.error('❌ Missing: ROBLOX_GROUP_ID');
 if (!API_KEY) console.error('❌ Missing: ROBLOX_OPENCLOUD_API_KEY');
 if (!AUTH_TOKEN) console.error('❌ Missing: API_AUTH_TOKEN');
 
-// Debug: Log API key prefix (first 20 chars) to verify it's loaded
+// Debug: Log API key prefix
 console.log(`🔑 API Key loaded: ${API_KEY ? API_KEY.substring(0, 20) + '...' : 'missing'}`);
 console.log(`📦 Group ID: ${GROUP_ID}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
 
-// ---------- Authentication Middleware (x-api-key for your API) ----------
+// ---------- Authentication Middleware ----------
 function authenticate(req, res, next) {
   const apiKey = req.headers['x-api-key'];
+  
+  console.log('🔐 Auth check - x-api-key:', apiKey ? 'present' : 'missing');
   
   if (!apiKey) {
     return res.status(401).json({
@@ -39,11 +41,14 @@ function authenticate(req, res, next) {
     });
   }
   
+  console.log('✅ Authentication successful');
   next();
 }
 
-// Apply authentication to all /utils/roblox endpoints
-app.use('/utils/roblox', authenticate);
+// Apply authentication to all /utils/roblox endpoints EXCEPT test and health
+app.use('/utils/roblox/promote', authenticate);
+app.use('/utils/roblox/demote', authenticate);
+app.use('/utils/roblox/setrank', authenticate);
 
 // ---------- Helper Functions ----------
 
@@ -67,6 +72,7 @@ async function getGroupRoles() {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
   
   console.log(`📤 GET ${url}`);
+  console.log(`🔑 Using API Key: ${API_KEY.substring(0, 15)}...`);
   
   try {
     const response = await axios.get(url, {
@@ -77,19 +83,36 @@ async function getGroupRoles() {
     });
     
     // Log the full response for debugging
-    console.log('📄 Full response:', JSON.stringify(response.data, null, 2));
+    console.log('📄 Response status:', response.status);
+    console.log('📄 Response data keys:', Object.keys(response.data));
     
     // Check if roles exist in response
-    if (!response.data || !response.data.roles) {
-      console.error('❌ No roles found in response:', response.data);
+    if (!response.data) {
+      console.error('❌ No data in response');
+      throw new Error('No data received from Roblox API');
+    }
+    
+    if (!response.data.roles) {
+      console.error('❌ No roles in response:', response.data);
+      // Check if there's an error message in the response
+      if (response.data.error) {
+        throw new Error(`Roblox API error: ${response.data.error}`);
+      }
       throw new Error('No roles data received from Roblox API');
     }
     
+    if (!Array.isArray(response.data.roles)) {
+      console.error('❌ Roles is not an array:', typeof response.data.roles);
+      throw new Error('Roles data is not an array');
+    }
+    
+    console.log(`✅ Found ${response.data.roles.length} roles`);
     return response.data.roles.sort((a, b) => a.rank - b.rank);
   } catch (error) {
     console.error('❌ Error fetching group roles:');
     if (error.response) {
       console.error('Status:', error.response.status);
+      console.error('Headers:', error.response.headers);
       console.error('Data:', error.response.data);
     } else {
       console.error('Error:', error.message);
@@ -163,6 +186,9 @@ async function changeUserRank(userId, roleId, reason = '') {
 
 app.post('/utils/roblox/promote', async (req, res) => {
   try {
+    console.log('📥 Received promote request');
+    console.log('📋 Request body:', req.body);
+    
     const { robloxUsername, reason } = req.body;
     if (!robloxUsername || !reason) {
       return res.status(400).json({ error: 'robloxUsername and reason are required' });
@@ -174,7 +200,10 @@ app.post('/utils/roblox/promote', async (req, res) => {
     console.log(`👤 User ID: ${userId}`);
 
     const roles = await getGroupRoles();
+    console.log(`📋 Found ${roles.length} roles`);
+    
     const currentRole = await getUserRole(userId);
+    console.log(`📋 Current role: ${currentRole.name} (${currentRole.rank})`);
 
     const currentIdx = roles.findIndex(r => r.id === currentRole.id);
     if (currentIdx === -1) {
@@ -185,6 +214,8 @@ app.post('/utils/roblox/promote', async (req, res) => {
     }
 
     const newRole = roles[currentIdx + 1];
+    console.log(`📋 New role: ${newRole.name} (${newRole.rank})`);
+    
     await changeUserRank(userId, newRole.id, reason);
 
     res.status(200).json({
@@ -199,6 +230,9 @@ app.post('/utils/roblox/promote', async (req, res) => {
 
 app.post('/utils/roblox/demote', async (req, res) => {
   try {
+    console.log('📥 Received demote request');
+    console.log('📋 Request body:', req.body);
+    
     const { robloxUsername, reason } = req.body;
     if (!robloxUsername || !reason) {
       return res.status(400).json({ error: 'robloxUsername and reason are required' });
@@ -233,6 +267,9 @@ app.post('/utils/roblox/demote', async (req, res) => {
 
 app.post('/utils/roblox/setrank', async (req, res) => {
   try {
+    console.log('📥 Received setrank request');
+    console.log('📋 Request body:', req.body);
+    
     const { robloxUsername, reason, rankName } = req.body;
     if (!robloxUsername || !reason || !rankName) {
       return res.status(400).json({ error: 'robloxUsername, reason, and rankName are required' });
@@ -269,18 +306,16 @@ function handleError(res, error) {
     console.error('📄 Response data:', error.response.data);
   }
   
-  // Check if it's an axios error with response
   if (axios.isAxiosError(error) && error.response) {
     const status = error.response.status || 500;
     const data = error.response.data || {};
     
-    // Special handling for auth errors
     if (status === 401) {
       return res.status(401).json({
         error: 'Invalid or expired Roblox API key',
-        message: 'The OpenCloud API key is invalid or expired. Please regenerate it.',
+        message: 'The OpenCloud API key is invalid or expired.',
         details: data,
-        suggestion: 'Go to https://create.roblox.com/dashboard and create a new API key with groups:read and groups:write permissions'
+        suggestion: 'Regenerate your API key at https://create.roblox.com/dashboard'
       });
     }
     if (status === 403) {
@@ -288,15 +323,15 @@ function handleError(res, error) {
         error: 'Roblox API key lacks required permissions',
         message: 'API key needs groups:read and groups:write permissions',
         details: data,
-        suggestion: 'Go to https://create.roblox.com/dashboard and ensure your API key has groups:read and groups:write permissions'
+        suggestion: 'Update API key permissions at https://create.roblox.com/dashboard'
       });
     }
     if (status === 404) {
       return res.status(404).json({
         error: 'Group or user not found',
-        message: 'The group ID or user may not exist',
+        message: `Group ID ${GROUP_ID} or user may not exist`,
         details: data,
-        suggestion: `Check if group ID ${GROUP_ID} is correct`
+        suggestion: `Verify group ID ${GROUP_ID} is correct`
       });
     }
     
@@ -306,24 +341,17 @@ function handleError(res, error) {
     });
   }
   
-  // Handle our custom errors
-  if (error.message) {
-    return res.status(500).json({
-      error: error.message,
-      suggestion: 'Check the server logs for more details'
-    });
-  }
-  
   res.status(500).json({
-    error: 'Internal server error',
-    message: error.message || 'Unknown error occurred'
+    error: error.message || 'Internal server error',
+    suggestion: 'Check Vercel logs for more details'
   });
 }
 
-// ---------- Test Endpoint - Direct API key test ----------
+// ---------- Test Endpoint - No auth required ----------
 app.get('/utils/roblox/test-api-key', async (req, res) => {
   try {
-    // Simple test to verify if API key works
+    console.log('🧪 Running API key test...');
+    
     const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
     const response = await axios.get(url, {
       headers: {
@@ -332,7 +360,9 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
       }
     });
     
-    // Check if we got valid data
+    console.log('📄 Test response status:', response.status);
+    console.log('📄 Test response keys:', Object.keys(response.data));
+    
     const hasRoles = response.data && Array.isArray(response.data.roles);
     
     res.json({
@@ -346,6 +376,10 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ API key test failed:', error.message);
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', error.response.data);
+    }
     res.status(500).json({
       success: false,
       message: 'API key test failed',
