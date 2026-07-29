@@ -1,4 +1,4 @@
-// server.js - FIXED VERSION (Fully Functional for Production)
+// server.js - STREAMLINED FIX
 const express = require('express');
 const axios = require('axios');
 
@@ -10,14 +10,10 @@ const GROUP_ID = process.env.ROBLOX_GROUP_ID;
 const API_KEY = process.env.ROBLOX_OPENCLOUD_API_KEY || '';
 const AUTH_TOKEN = process.env.API_AUTH_TOKEN || '';
 
-// Serverless-friendly validation
 if (!GROUP_ID || !API_KEY || !AUTH_TOKEN) {
-  console.error('❌ WARNING: Missing required environment variables. API calls will fail.');
-  if (!GROUP_ID) console.error('  - ROBLOX_GROUP_ID');
-  if (!API_KEY) console.error('  - ROBLOX_OPENCLOUD_API_KEY');
-  if (!AUTH_TOKEN) console.error('  - API_AUTH_TOKEN');
+  console.error('❌ WARNING: Missing required environment variables.');
 } else {
-  console.log('🚀 Server starting with all variables present...');
+  console.log('🚀 Server starting...');
   console.log(`📦 Group ID: ${GROUP_ID}`);
 }
 
@@ -33,7 +29,6 @@ app.use('/utils/roblox', (req, res, next) => {
   next();
 });
 
-// ---------- Small helper for throwing errors ----------
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
@@ -63,66 +58,41 @@ async function getSortedRoles() {
   return rolesRes.data.groupRoles.slice().sort((a, b) => a.rank - b.rank);
 }
 
-async function getMembershipId(userId) {
+// NEW: Fetches the user's role directly using their UserId (bypassing the buggy filter endpoint)
+async function getCurrentRoleId(userId, username) {
   try {
-    const membershipRes = await axios.get(
-      `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships?maxPageSize=10&filter=user=='users/${userId}'`,
+    const memberData = await axios.get(
+      `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${userId}`,
       { headers: openCloudHeaders }
     );
-
-    const memberships = membershipRes.data.groupMemberships;
-    if (!memberships || memberships.length === 0) {
-      throw httpError(404, `User ${userId} is not in group ${GROUP_ID}`);
-    }
-
-    // Returns the membership ID string
-    return memberships[0].path.split('/').pop();
+    return String(memberData.data.role.split('/').pop());
   } catch (err) {
     if (err.response?.status === 404) {
-      throw httpError(404, `User ${userId} is not in group ${GROUP_ID}`);
+      throw httpError(404, `User ${username} is not currently in the group.`);
     }
-    throw err;
+    throw err; // Re-throw if it's a 401/403 API Key issue
   }
 }
 
-async function getCurrentRoleId(membershipId) {
-  const memberData = await axios.get(
-    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`,
-    { headers: openCloudHeaders }
-  );
-  return memberData.data.role.split('/').pop();
-}
-
-async function setMembershipRole(membershipId, roleId) {
-  // Required ?updateMask=role for Roblox Open Cloud v2 PATCH requests
+async function setMembershipRole(userId, roleId) {
   await axios.patch(
-    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}?updateMask=role`,
+    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${userId}?updateMask=role`,
     { role: `groups/${GROUP_ID}/roles/${roleId}` },
     { headers: openCloudHeaders }
   );
 }
 
-// Extract error message cleanly, handling Roblox's empty error array
 function sendError(res, error, fallbackContext) {
   const status = error.response?.status || error.status || 500;
   
-  let message = error.message;
-  
-  // Cleanly fallback through various Roblox error formats
-  if (error.response?.data?.error?.message) {
-    message = error.response.data.error.message;
-  } else if (typeof error.response?.data?.error === 'string') {
-    message = error.response.data.error;
-  } else if (error.response?.data?.errors?.[0]?.message) {
-    // If Roblox sends the empty generic array, fall back to the error we built in httpError
-    message = error.response.data.errors[0].message || error.message;
-  }
+  // Give priority to our custom httpError messages before falling back to Axios defaults
+  let message = error.status ? error.message : (error.response?.data?.message || error.message);
 
   if (status === 500) {
     console.error(`❌ ${fallbackContext} error:`, error.response?.data || error.message);
   }
 
-  res.status(status).json({ error: message || `${fallbackContext} failed` });
+  res.status(status).json({ error: message });
 }
 
 // ---------- TEST ENDPOINT ----------
@@ -138,35 +108,26 @@ app.get('/utils/roblox/test', async (req, res) => {
       message: 'API key works!'
     });
   } catch (error) {
-    res.status(error.response?.status || 500).json({
-      success: false,
-      error: error.response?.data || error.message
-    });
+    res.status(error.response?.status || 500).json({ error: error.message });
   }
 });
 
 // ---------- PROMOTE ----------
 app.post('/utils/roblox/promote', async (req, res) => {
   const { robloxUsername, reason } = req.body;
-
-  if (!robloxUsername || !reason) {
-    return res.status(400).json({ error: 'robloxUsername and reason required' });
-  }
+  if (!robloxUsername || !reason) return res.status(400).json({ error: 'robloxUsername and reason required' });
 
   try {
     const userId = await getUserIdByUsername(robloxUsername);
+    const currentRoleId = await getCurrentRoleId(userId, robloxUsername);
     const roles = await getSortedRoles();
-    const membershipId = await getMembershipId(userId);
-    const currentRoleId = await getCurrentRoleId(membershipId);
 
-    const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
+    const currentIdx = roles.findIndex(r => String(r.id) === currentRoleId);
     if (currentIdx === -1) throw httpError(500, 'Current role not found in group role list');
-    if (currentIdx === roles.length - 1) {
-      throw httpError(400, 'Already at highest rank');
-    }
+    if (currentIdx === roles.length - 1) throw httpError(400, 'Already at highest rank');
 
     const newRole = roles[currentIdx + 1];
-    await setMembershipRole(membershipId, newRole.id);
+    await setMembershipRole(userId, newRole.id);
 
     res.json({
       success: true,
@@ -181,25 +142,19 @@ app.post('/utils/roblox/promote', async (req, res) => {
 // ---------- DEMOTE ----------
 app.post('/utils/roblox/demote', async (req, res) => {
   const { robloxUsername, reason } = req.body;
-
-  if (!robloxUsername || !reason) {
-    return res.status(400).json({ error: 'robloxUsername and reason required' });
-  }
+  if (!robloxUsername || !reason) return res.status(400).json({ error: 'robloxUsername and reason required' });
 
   try {
     const userId = await getUserIdByUsername(robloxUsername);
+    const currentRoleId = await getCurrentRoleId(userId, robloxUsername);
     const roles = await getSortedRoles();
-    const membershipId = await getMembershipId(userId);
-    const currentRoleId = await getCurrentRoleId(membershipId);
 
-    const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
+    const currentIdx = roles.findIndex(r => String(r.id) === currentRoleId);
     if (currentIdx === -1) throw httpError(500, 'Current role not found in group role list');
-    if (currentIdx === 0) {
-      throw httpError(400, 'Already at lowest rank');
-    }
+    if (currentIdx === 0) throw httpError(400, 'Already at lowest rank');
 
     const newRole = roles[currentIdx - 1];
-    await setMembershipRole(membershipId, newRole.id);
+    await setMembershipRole(userId, newRole.id);
 
     res.json({
       success: true,
@@ -214,22 +169,20 @@ app.post('/utils/roblox/demote', async (req, res) => {
 // ---------- SETRANK ----------
 app.post('/utils/roblox/setrank', async (req, res) => {
   const { robloxUsername, reason, rankName } = req.body;
-
-  if (!robloxUsername || !reason || !rankName) {
-    return res.status(400).json({ error: 'robloxUsername, reason, and rankName required' });
-  }
+  if (!robloxUsername || !reason || !rankName) return res.status(400).json({ error: 'robloxUsername, reason, and rankName required' });
 
   try {
     const userId = await getUserIdByUsername(robloxUsername);
+    
+    // Quick check to ensure they are in the group before trying to rank them
+    await getCurrentRoleId(userId, robloxUsername); 
+    
     const roles = await getSortedRoles();
-
     const targetRole = roles.find(r => r.displayName.toLowerCase() === rankName.toLowerCase());
-    if (!targetRole) {
-      throw httpError(404, `Rank "${rankName}" not found`);
-    }
+    
+    if (!targetRole) throw httpError(404, `Rank "${rankName}" not found in group`);
 
-    const membershipId = await getMembershipId(userId);
-    await setMembershipRole(membershipId, targetRole.id);
+    await setMembershipRole(userId, targetRole.id);
 
     res.json({
       success: true,
@@ -239,16 +192,6 @@ app.post('/utils/roblox/setrank', async (req, res) => {
   } catch (error) {
     sendError(res, error, 'Setrank');
   }
-});
-
-// ---------- HEALTH CHECK ----------
-app.get('/utils/roblox/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    groupId: GROUP_ID ? 'set' : 'missing',
-    apiKey: API_KEY ? 'set' : 'missing',
-    authToken: AUTH_TOKEN ? 'set' : 'missing'
-  });
 });
 
 // ---------- Export for Vercel ----------
