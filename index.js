@@ -1,5 +1,4 @@
-// server.js
-require('dotenv').config();
+// server.js (Vercel-compatible version with proper API key handling)
 const express = require('express');
 const axios = require('axios');
 
@@ -9,24 +8,20 @@ app.use(express.json());
 // ---------- Configuration from Environment ----------
 const GROUP_ID = process.env.ROBLOX_GROUP_ID;
 const API_KEY = process.env.ROBLOX_OPENCLOUD_API_KEY;
-const AUTH_TOKEN = process.env.API_AUTH_TOKEN; // e.g., "FrapAPI@"
+const AUTH_TOKEN = process.env.API_AUTH_TOKEN;
 
-// Validate required variables
-if (!GROUP_ID || !API_KEY || !AUTH_TOKEN) {
-  console.error('❌ Missing required environment variables:');
-  if (!GROUP_ID) console.error('  - ROBLOX_GROUP_ID');
-  if (!API_KEY) console.error('  - ROBLOX_OPENCLOUD_API_KEY');
-  if (!AUTH_TOKEN) console.error('  - API_AUTH_TOKEN');
-  process.exit(1);
-}
+// Don't exit process in serverless - just log errors
+if (!GROUP_ID) console.error('❌ Missing: ROBLOX_GROUP_ID');
+if (!API_KEY) console.error('❌ Missing: ROBLOX_OPENCLOUD_API_KEY');
+if (!AUTH_TOKEN) console.error('❌ Missing: API_AUTH_TOKEN');
 
-console.log('✅ Configuration loaded successfully');
-console.log(`📍 Group ID: ${GROUP_ID}`);
-console.log(`🔐 Authentication required (x-api-key header)`);
+// Debug: Log API key prefix (first 20 chars) to verify it's loaded
+console.log(`🔑 API Key loaded: ${API_KEY ? API_KEY.substring(0, 20) + '...' : 'missing'}`);
+console.log(`📦 Group ID: ${GROUP_ID}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
 
-// ---------- Authentication Middleware (x-api-key) ----------
+// ---------- Authentication Middleware (x-api-key for your API) ----------
 function authenticate(req, res, next) {
   const apiKey = req.headers['x-api-key'];
   
@@ -70,9 +65,13 @@ async function getUserId(username) {
 /** Get all roles of the group, sorted by rank ascending */
 async function getGroupRoles() {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
+  
+  // Log the request being made (for debugging)
+  console.log(`📤 GET ${url}`);
+  
   const response = await axios.get(url, {
     headers: {
-      'x-api-key': `Bearer ${API_KEY}`,
+      'x-api-key': API_KEY.trim(),  // Trim any whitespace
       'Content-Type': 'application/json',
     }
   });
@@ -82,9 +81,12 @@ async function getGroupRoles() {
 /** Get current role of a user */
 async function getUserRole(userId) {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/users/${userId}`;
+  
+  console.log(`📤 GET ${url}`);
+  
   const response = await axios.get(url, {
     headers: {
-      'x-api-key': `Bearer ${API_KEY}`,
+      'x-api-key': API_KEY.trim(),  // Trim any whitespace
       'Content-Type': 'application/json',
     }
   });
@@ -97,9 +99,12 @@ async function changeUserRank(userId, roleId, reason = '') {
   const payload = { roleId };
   if (reason) payload.reason = reason;
   
+  console.log(`📤 PATCH ${url}`);
+  console.log(`📦 Payload:`, payload);
+  
   const response = await axios.patch(url, payload, {
     headers: {
-      'x-api-key': `Bearer ${API_KEY}`,
+      'x-api-key': API_KEY.trim(),  // Trim any whitespace
       'Content-Type': 'application/json',
     }
   });
@@ -115,7 +120,11 @@ app.post('/utils/roblox/promote', async (req, res) => {
       return res.status(400).json({ error: 'robloxUsername and reason are required' });
     }
 
+    console.log(`🔄 Promoting ${robloxUsername}...`);
+
     const userId = await getUserId(robloxUsername);
+    console.log(`👤 User ID: ${userId}`);
+
     const roles = await getGroupRoles();
     const currentRole = await getUserRole(userId);
 
@@ -146,6 +155,8 @@ app.post('/utils/roblox/demote', async (req, res) => {
     if (!robloxUsername || !reason) {
       return res.status(400).json({ error: 'robloxUsername and reason are required' });
     }
+
+    console.log(`🔄 Demoting ${robloxUsername}...`);
 
     const userId = await getUserId(robloxUsername);
     const roles = await getGroupRoles();
@@ -179,6 +190,8 @@ app.post('/utils/roblox/setrank', async (req, res) => {
       return res.status(400).json({ error: 'robloxUsername, reason, and rankName are required' });
     }
 
+    console.log(`🔄 Setting ${robloxUsername} to ${rankName}...`);
+
     const userId = await getUserId(robloxUsername);
     const roles = await getGroupRoles();
 
@@ -201,24 +214,32 @@ app.post('/utils/roblox/setrank', async (req, res) => {
 
 // ---------- Error Handler ----------
 function handleError(res, error) {
-  console.error('Error:', error.message);
+  console.error('❌ Error:', error.message);
+  
+  if (error.response) {
+    console.error('📄 Response status:', error.response.status);
+    console.error('📄 Response data:', error.response.data);
+  }
   
   if (axios.isAxiosError(error)) {
     const status = error.response?.status || 500;
     const data = error.response?.data || {};
     
+    // Special handling for auth errors
     if (status === 401) {
       return res.status(401).json({
         error: 'Invalid or expired Roblox API key',
-        message: 'Check your ROBLOX_OPENCLOUD_API_KEY',
-        details: data
+        message: 'The OpenCloud API key is invalid or expired. Please regenerate it.',
+        details: data,
+        suggestion: 'Go to https://create.roblox.com/dashboard and create a new API key with groups:read and groups:write permissions'
       });
     }
     if (status === 403) {
       return res.status(403).json({
         error: 'Roblox API key lacks required permissions',
-        message: 'Needs groups:read and groups:write',
-        details: data
+        message: 'API key needs groups:read and groups:write permissions',
+        details: data,
+        suggestion: 'Go to https://create.roblox.com/dashboard and ensure your API key has groups:read and groups:write permissions'
       });
     }
     
@@ -233,20 +254,50 @@ function handleError(res, error) {
   });
 }
 
-// ---------- Health Check (No auth) ----------
-app.get('/utils/roblox/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    groupId: GROUP_ID,
-    apiKeyPrefix: API_KEY.substring(0, 10) + '...',
-    authHeader: 'x-api-key'
-  });
+// ---------- Test Endpoint - Direct API key test ----------
+app.get('/utils/roblox/test-api-key', async (req, res) => {
+  try {
+    // Simple test to verify if API key works
+    const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
+    const response = await axios.get(url, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: 'API key is working!',
+      rolesCount: response.data.roles?.length || 0,
+      apiKeyPrefix: API_KEY.substring(0, 20) + '...'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'API key test failed',
+      error: error.response?.data || error.message,
+      status: error.response?.status
+    });
+  }
 });
 
-// ---------- Start Server ----------
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Roblox utils API running on port ${PORT}`);
-  console.log(`📍 Health check: http://localhost:${PORT}/utils/roblox/health`);
-  console.log(`🔐 Send x-api-key header with your token`);
+// ---------- Health Check (No auth) ----------
+app.get('/utils/roblox/health', (req, res) => {
+  const status = {
+    status: GROUP_ID && API_KEY && AUTH_TOKEN ? 'ok' : 'misconfigured',
+    groupId: GROUP_ID ? 'set' : 'missing',
+    apiKey: API_KEY ? `set (${API_KEY.substring(0, 20)}...)` : 'missing',
+    authToken: AUTH_TOKEN ? 'set' : 'missing',
+    authHeader: 'x-api-key'
+  };
+  
+  if (!GROUP_ID || !API_KEY || !AUTH_TOKEN) {
+    return res.status(500).json(status);
+  }
+  
+  res.json(status);
 });
+
+// ---------- Export for Vercel ----------
+module.exports = app;
