@@ -1,4 +1,4 @@
-// server.js - FINAL ROBUST VERSION
+// server.js - FINAL ROBUST VERSION (with debug logging)
 const express = require('express');
 const axios = require('axios');
 
@@ -49,6 +49,10 @@ async function getSortedRoles() {
     `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles?maxPageSize=100`,
     { headers: openCloudHeaders }
   );
+
+  // DEBUG: log the raw roles payload so we can see exactly what Roblox returned
+  console.log('DEBUG raw roles response:', JSON.stringify(rolesRes.data, null, 2));
+
   // Sort roles from lowest rank to highest rank
   return rolesRes.data.groupRoles.slice().sort((a, b) => a.rank - b.rank);
 }
@@ -65,6 +69,9 @@ async function getMembershipData(userId) {
     }
   );
 
+  // DEBUG: log the raw membership payload
+  console.log('DEBUG raw membership response:', JSON.stringify(membershipRes.data, null, 2));
+
   const memberships = membershipRes.data.groupMemberships;
   if (!memberships || memberships.length === 0) {
     throw httpError(404, `User is not currently in the group.`);
@@ -76,6 +83,9 @@ async function getMembershipData(userId) {
   // Extract role ID safely whether it's a full path or just an ID
   const roleRef = membership.role;
   const roleId = typeof roleRef === 'string' ? roleRef.split('/').pop() : String(roleRef);
+
+  // DEBUG: log what we extracted
+  console.log('DEBUG membershipId:', membershipId, '| raw roleRef:', JSON.stringify(roleRef), '| extracted roleId:', JSON.stringify(roleId));
 
   return { membershipId, roleId };
 }
@@ -111,6 +121,10 @@ app.post('/utils/roblox/promote', async (req, res) => {
     const { membershipId, roleId: currentRoleId } = await getMembershipData(userId);
     const roles = await getSortedRoles();
 
+    // DEBUG: log exactly what we're comparing
+    console.log('DEBUG [promote] currentRoleId:', JSON.stringify(currentRoleId));
+    console.log('DEBUG [promote] roles list:', roles.map(r => ({ id: r.id, name: r.displayName, rank: r.rank })));
+
     const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
     
     if (currentIdx === -1) {
@@ -136,9 +150,14 @@ app.post('/utils/roblox/demote', async (req, res) => {
     const { membershipId, roleId: currentRoleId } = await getMembershipData(userId);
     const roles = await getSortedRoles();
 
+    // DEBUG: log exactly what we're comparing
+    console.log('DEBUG [demote] currentRoleId:', JSON.stringify(currentRoleId));
+    console.log('DEBUG [demote] roles list:', roles.map(r => ({ id: r.id, name: r.displayName, rank: r.rank })));
+
     const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
     
     if (currentIdx === -1) {
+      console.error(`❌ Mismatch Debug: User's Role ID "${currentRoleId}" was not found in fetched group roles:`, roles.map(r => r.id));
       throw httpError(400, `Could not match user's current role ID (${currentRoleId}) in group roles.`);
     }
 
