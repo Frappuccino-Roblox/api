@@ -1,4 +1,4 @@
-// server.js - FINAL ROBUST VERSION (with debug logging)
+// server.js - FINAL ROBUST VERSION (paginated roles + rich response fields)
 const express = require('express');
 const axios = require('axios');
 
@@ -64,13 +64,9 @@ async function getSortedRoles() {
       }
     );
 
-    console.log(`DEBUG roles page (token="${pageToken}"):`, rolesRes.data.groupRoles.map(r => ({ id: r.id, name: r.displayName, rank: r.rank })));
-
     allRoles = allRoles.concat(rolesRes.data.groupRoles);
     pageToken = rolesRes.data.nextPageToken || '';
   } while (pageToken);
-
-  console.log('DEBUG total roles fetched across all pages:', allRoles.length);
 
   // Sort roles from lowest rank to highest rank
   return allRoles.slice().sort((a, b) => a.rank - b.rank);
@@ -88,9 +84,6 @@ async function getMembershipData(userId) {
     }
   );
 
-  // DEBUG: log the raw membership payload
-  console.log('DEBUG raw membership response:', JSON.stringify(membershipRes.data, null, 2));
-
   const memberships = membershipRes.data.groupMemberships;
   if (!memberships || memberships.length === 0) {
     throw httpError(404, `User is not currently in the group.`);
@@ -102,9 +95,6 @@ async function getMembershipData(userId) {
   // Extract role ID safely whether it's a full path or just an ID
   const roleRef = membership.role;
   const roleId = typeof roleRef === 'string' ? roleRef.split('/').pop() : String(roleRef);
-
-  // DEBUG: log what we extracted
-  console.log('DEBUG membershipId:', membershipId, '| raw roleRef:', JSON.stringify(roleRef), '| extracted roleId:', JSON.stringify(roleId));
 
   return { membershipId, roleId };
 }
@@ -140,10 +130,6 @@ app.post('/utils/roblox/promote', async (req, res) => {
     const { membershipId, roleId: currentRoleId } = await getMembershipData(userId);
     const roles = await getSortedRoles();
 
-    // DEBUG: log exactly what we're comparing
-    console.log('DEBUG [promote] currentRoleId:', JSON.stringify(currentRoleId));
-    console.log('DEBUG [promote] roles list:', roles.map(r => ({ id: r.id, name: r.displayName, rank: r.rank })));
-
     const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
     
     if (currentIdx === -1) {
@@ -153,10 +139,23 @@ app.post('/utils/roblox/promote', async (req, res) => {
 
     if (currentIdx === roles.length - 1) throw httpError(400, 'Already at highest rank');
 
+    const oldRole = roles[currentIdx];
     const newRole = roles[currentIdx + 1];
     await setMembershipRole(membershipId, newRole.id);
 
-    res.json({ success: true, message: `Promoted ${robloxUsername} to ${newRole.displayName}` });
+    res.json({
+      success: true,
+      message: `Promoted ${robloxUsername} from ${oldRole.displayName} to ${newRole.displayName}`,
+      robloxUsername,
+      userId,
+      reason,
+      oldRoleId: oldRole.id,
+      oldRoleName: oldRole.displayName,
+      oldRank: oldRole.rank,
+      newRoleId: newRole.id,
+      newRoleName: newRole.displayName,
+      newRank: newRole.rank
+    });
   } catch (error) { sendError(res, error, 'Promote'); }
 });
 
@@ -169,10 +168,6 @@ app.post('/utils/roblox/demote', async (req, res) => {
     const { membershipId, roleId: currentRoleId } = await getMembershipData(userId);
     const roles = await getSortedRoles();
 
-    // DEBUG: log exactly what we're comparing
-    console.log('DEBUG [demote] currentRoleId:', JSON.stringify(currentRoleId));
-    console.log('DEBUG [demote] roles list:', roles.map(r => ({ id: r.id, name: r.displayName, rank: r.rank })));
-
     const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
     
     if (currentIdx === -1) {
@@ -182,10 +177,23 @@ app.post('/utils/roblox/demote', async (req, res) => {
 
     if (currentIdx === 0) throw httpError(400, 'Already at lowest rank');
 
+    const oldRole = roles[currentIdx];
     const newRole = roles[currentIdx - 1];
     await setMembershipRole(membershipId, newRole.id);
 
-    res.json({ success: true, message: `Demoted ${robloxUsername} to ${newRole.displayName}` });
+    res.json({
+      success: true,
+      message: `Demoted ${robloxUsername} from ${oldRole.displayName} to ${newRole.displayName}`,
+      robloxUsername,
+      userId,
+      reason,
+      oldRoleId: oldRole.id,
+      oldRoleName: oldRole.displayName,
+      oldRank: oldRole.rank,
+      newRoleId: newRole.id,
+      newRoleName: newRole.displayName,
+      newRank: newRole.rank
+    });
   } catch (error) { sendError(res, error, 'Demote'); }
 });
 
@@ -195,14 +203,33 @@ app.post('/utils/roblox/setrank', async (req, res) => {
 
   try {
     const userId = await getUserIdByUsername(robloxUsername);
-    const { membershipId } = await getMembershipData(userId); 
+    const { membershipId, roleId: currentRoleId } = await getMembershipData(userId);
     const roles = await getSortedRoles();
     
     const targetRole = roles.find(r => r.displayName.toLowerCase() === rankName.toLowerCase());
     if (!targetRole) throw httpError(404, `Rank "${rankName}" not found in group`);
 
+    // Best-effort lookup of the user's current role for oldRank/oldRoleName context.
+    // If it can't be matched (e.g. stale/legacy role id), we still proceed with the set.
+    const oldRole = roles.find(r => String(r.id) === String(currentRoleId)) || null;
+
     await setMembershipRole(membershipId, targetRole.id);
-    res.json({ success: true, message: `Set ${robloxUsername} to ${targetRole.displayName}` });
+
+    res.json({
+      success: true,
+      message: oldRole
+        ? `Set ${robloxUsername} from ${oldRole.displayName} to ${targetRole.displayName}`
+        : `Set ${robloxUsername} to ${targetRole.displayName}`,
+      robloxUsername,
+      userId,
+      reason,
+      oldRoleId: oldRole ? oldRole.id : currentRoleId,
+      oldRoleName: oldRole ? oldRole.displayName : null,
+      oldRank: oldRole ? oldRole.rank : null,
+      newRoleId: targetRole.id,
+      newRoleName: targetRole.displayName,
+      newRank: targetRole.rank
+    });
   } catch (error) { sendError(res, error, 'Setrank'); }
 });
 
