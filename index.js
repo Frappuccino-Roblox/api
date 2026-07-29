@@ -1,4 +1,4 @@
-// server.js - THE REAL FIX
+// server.js - FINAL ROBUST VERSION
 const express = require('express');
 const axios = require('axios');
 
@@ -49,39 +49,35 @@ async function getSortedRoles() {
     `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles?maxPageSize=100`,
     { headers: openCloudHeaders }
   );
+  // Sort roles from lowest rank to highest rank
   return rolesRes.data.groupRoles.slice().sort((a, b) => a.rank - b.rank);
 }
 
-// NEW: We absolutely MUST use the filter. Axios 'params' handles the URL encoding perfectly.
 async function getMembershipData(userId) {
-  try {
-    const membershipRes = await axios.get(
-      `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships`,
-      { 
-        headers: openCloudHeaders,
-        params: {
-          maxPageSize: 10,
-          filter: `user == 'users/${userId}'`
-        }
+  const membershipRes = await axios.get(
+    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships`,
+    { 
+      headers: openCloudHeaders,
+      params: {
+        maxPageSize: 10,
+        filter: `user == 'users/${userId}'`
       }
-    );
-
-    const memberships = membershipRes.data.groupMemberships;
-    if (!memberships || memberships.length === 0) {
-      throw httpError(404, `User is not currently in the group.`);
     }
+  );
 
-    // Return BOTH the membership ID and their current role from a single API call
-    return {
-      membershipId: memberships[0].path.split('/').pop(),
-      roleId: String(memberships[0].role.split('/').pop())
-    };
-  } catch (err) {
-    // If it fails here, we log it so you can see exactly why in your server console
-    if (err.response?.status === 400) console.error("❌ Roblox rejected filter syntax:", err.response.data);
-    if (err.response?.status === 403) console.error("❌ API Key lacks 'Group Memberships - Read' permission.");
-    throw err;
+  const memberships = membershipRes.data.groupMemberships;
+  if (!memberships || memberships.length === 0) {
+    throw httpError(404, `User is not currently in the group.`);
   }
+
+  const membership = memberships[0];
+  const membershipId = membership.path.split('/').pop();
+  
+  // Extract role ID safely whether it's a full path or just an ID
+  const roleRef = membership.role;
+  const roleId = typeof roleRef === 'string' ? roleRef.split('/').pop() : String(roleRef);
+
+  return { membershipId, roleId };
 }
 
 async function setMembershipRole(membershipId, roleId) {
@@ -96,7 +92,6 @@ function sendError(res, error, fallbackContext) {
   const status = error.response?.status || error.status || 500;
   let message = error.status ? error.message : (error.response?.data?.message || error.message);
   
-  // Handle Roblox's empty generic array format
   if (error.response?.data?.errors?.[0]?.message) {
     message = error.response.data.errors[0].message || message;
   }
@@ -116,8 +111,13 @@ app.post('/utils/roblox/promote', async (req, res) => {
     const { membershipId, roleId: currentRoleId } = await getMembershipData(userId);
     const roles = await getSortedRoles();
 
-    const currentIdx = roles.findIndex(r => String(r.id) === currentRoleId);
-    if (currentIdx === -1) throw httpError(500, 'Current role not found in group role list');
+    const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
+    
+    if (currentIdx === -1) {
+      console.error(`❌ Mismatch Debug: User's Role ID "${currentRoleId}" was not found in fetched group roles:`, roles.map(r => r.id));
+      throw httpError(400, `Could not match user's current role ID (${currentRoleId}) in group roles. (Are they group owner?)`);
+    }
+
     if (currentIdx === roles.length - 1) throw httpError(400, 'Already at highest rank');
 
     const newRole = roles[currentIdx + 1];
@@ -136,8 +136,12 @@ app.post('/utils/roblox/demote', async (req, res) => {
     const { membershipId, roleId: currentRoleId } = await getMembershipData(userId);
     const roles = await getSortedRoles();
 
-    const currentIdx = roles.findIndex(r => String(r.id) === currentRoleId);
-    if (currentIdx === -1) throw httpError(500, 'Current role not found in group role list');
+    const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
+    
+    if (currentIdx === -1) {
+      throw httpError(400, `Could not match user's current role ID (${currentRoleId}) in group roles.`);
+    }
+
     if (currentIdx === 0) throw httpError(400, 'Already at lowest rank');
 
     const newRole = roles[currentIdx - 1];
