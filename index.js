@@ -1,4 +1,4 @@
-// server.js - FIXED VERSION
+// server.js - FIXED VERSION (Fully Functional for Production)
 const express = require('express');
 const axios = require('axios');
 
@@ -10,7 +10,7 @@ const GROUP_ID = process.env.ROBLOX_GROUP_ID;
 const API_KEY = process.env.ROBLOX_OPENCLOUD_API_KEY || '';
 const AUTH_TOKEN = process.env.API_AUTH_TOKEN || '';
 
-// Serverless-friendly validation (No process.exit)
+// Serverless-friendly validation
 if (!GROUP_ID || !API_KEY || !AUTH_TOKEN) {
   console.error('❌ WARNING: Missing required environment variables. API calls will fail.');
   if (!GROUP_ID) console.error('  - ROBLOX_GROUP_ID');
@@ -64,18 +64,25 @@ async function getSortedRoles() {
 }
 
 async function getMembershipId(userId) {
-  const filter = `user == 'users/${userId}'`;
-  const membershipRes = await axios.get(
-    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships?maxPageSize=10&filter=${encodeURIComponent(filter)}`,
-    { headers: openCloudHeaders }
-  );
+  try {
+    const membershipRes = await axios.get(
+      `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships?maxPageSize=10&filter=user=='users/${userId}'`,
+      { headers: openCloudHeaders }
+    );
 
-  const memberships = membershipRes.data.groupMemberships;
-  if (!memberships?.length) {
-    throw httpError(404, 'User not in group');
+    const memberships = membershipRes.data.groupMemberships;
+    if (!memberships || memberships.length === 0) {
+      throw httpError(404, `User ${userId} is not in group ${GROUP_ID}`);
+    }
+
+    // Returns the membership ID string
+    return memberships[0].path.split('/').pop();
+  } catch (err) {
+    if (err.response?.status === 404) {
+      throw httpError(404, `User ${userId} is not in group ${GROUP_ID}`);
+    }
+    throw err;
   }
-
-  return memberships[0].path.split('/').pop();
 }
 
 async function getCurrentRoleId(membershipId) {
@@ -87,7 +94,7 @@ async function getCurrentRoleId(membershipId) {
 }
 
 async function setMembershipRole(membershipId, roleId) {
-  // FIX: Added ?updateMask=role (Required by Roblox Open Cloud v2 for PATCH requests)
+  // Required ?updateMask=role for Roblox Open Cloud v2 PATCH requests
   await axios.patch(
     `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}?updateMask=role`,
     { role: `groups/${GROUP_ID}/roles/${roleId}` },
@@ -95,14 +102,27 @@ async function setMembershipRole(membershipId, roleId) {
   );
 }
 
-// FIX: Correctly extracts the status code from Axios errors (error.response.status)
+// Extract error message cleanly, handling Roblox's empty error array
 function sendError(res, error, fallbackContext) {
   const status = error.response?.status || error.status || 500;
-  const payload = error.response?.data || error.message;
-  if (status === 500) {
-    console.error(`❌ ${fallbackContext} error:`, payload);
+  
+  let message = error.message;
+  
+  // Cleanly fallback through various Roblox error formats
+  if (error.response?.data?.error?.message) {
+    message = error.response.data.error.message;
+  } else if (typeof error.response?.data?.error === 'string') {
+    message = error.response.data.error;
+  } else if (error.response?.data?.errors?.[0]?.message) {
+    // If Roblox sends the empty generic array, fall back to the error we built in httpError
+    message = error.response.data.errors[0].message || error.message;
   }
-  res.status(status).json({ error: payload });
+
+  if (status === 500) {
+    console.error(`❌ ${fallbackContext} error:`, error.response?.data || error.message);
+  }
+
+  res.status(status).json({ error: message || `${fallbackContext} failed` });
 }
 
 // ---------- TEST ENDPOINT ----------
@@ -139,7 +159,6 @@ app.post('/utils/roblox/promote', async (req, res) => {
     const membershipId = await getMembershipId(userId);
     const currentRoleId = await getCurrentRoleId(membershipId);
 
-    // FIX: String cast prevents type mismatch bugs if Open Cloud returns ints vs strings
     const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
     if (currentIdx === -1) throw httpError(500, 'Current role not found in group role list');
     if (currentIdx === roles.length - 1) {
