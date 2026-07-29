@@ -45,16 +45,35 @@ async function getUserIdByUsername(username) {
 }
 
 async function getSortedRoles() {
-  const rolesRes = await axios.get(
-    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles?maxPageSize=100`,
-    { headers: openCloudHeaders }
-  );
+  let allRoles = [];
+  let pageToken = '';
 
-  // DEBUG: log the raw roles payload so we can see exactly what Roblox returned
-  console.log('DEBUG raw roles response:', JSON.stringify(rolesRes.data, null, 2));
+  // Roblox paginates this endpoint even when maxPageSize is set high enough
+  // to theoretically cover all roles in one request. If we don't follow
+  // nextPageToken, roles on later pages (including ones a member might
+  // currently hold) get silently dropped, causing false "role not found" errors.
+  do {
+    const rolesRes = await axios.get(
+      `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`,
+      {
+        headers: openCloudHeaders,
+        params: {
+          maxPageSize: 100,
+          ...(pageToken ? { pageToken } : {})
+        }
+      }
+    );
+
+    console.log(`DEBUG roles page (token="${pageToken}"):`, rolesRes.data.groupRoles.map(r => ({ id: r.id, name: r.displayName, rank: r.rank })));
+
+    allRoles = allRoles.concat(rolesRes.data.groupRoles);
+    pageToken = rolesRes.data.nextPageToken || '';
+  } while (pageToken);
+
+  console.log('DEBUG total roles fetched across all pages:', allRoles.length);
 
   // Sort roles from lowest rank to highest rank
-  return rolesRes.data.groupRoles.slice().sort((a, b) => a.rank - b.rank);
+  return allRoles.slice().sort((a, b) => a.rank - b.rank);
 }
 
 async function getMembershipData(userId) {
