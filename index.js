@@ -1,4 +1,4 @@
-// server.js - Using API Key for everything (no cookies)
+// server.js - Fixed with correct endpoints
 const express = require('express');
 const axios = require('axios');
 
@@ -21,7 +21,6 @@ const GROUPS_API = 'https://groups.roblox.com/v1';
 // ---------- Helper Functions ----------
 
 async function getGroupRoles() {
-  // Using OpenCloud for GET (works)
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
   console.log(`📤 GET ${url}`);
   
@@ -32,8 +31,6 @@ async function getGroupRoles() {
         'Content-Type': 'application/json',
       }
     });
-    
-    console.log('📊 Response keys:', Object.keys(response.data));
     
     let roles = null;
     if (response.data.groupRoles) roles = response.data.groupRoles;
@@ -82,7 +79,6 @@ async function getUserId(username) {
 }
 
 async function getUserRole(userId) {
-  // Using Groups API (not OpenCloud) - this might work better
   const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
   console.log(`📤 GET ${url}`);
   
@@ -107,13 +103,17 @@ async function getUserRole(userId) {
 }
 
 async function updateUserRank(userId, roleId, reason = '') {
-  // Try Groups API PATCH (not OpenCloud)
-  const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-  console.log(`📤 PATCH ${url}`);
+  // CORRECT ENDPOINT: Use POST to change user rank
+  // The endpoint is /groups/{groupId}/users/{userId}
+  // But we need to use the correct method
+  
+  // Try using OpenCloud with POST instead of PATCH
+  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/users/${userId}`;
+  console.log(`📤 POST ${url}`);
   console.log(`📦 Payload:`, { roleId, reason });
   
   try {
-    const response = await axios.patch(url, {
+    const response = await axios.post(url, {
       roleId: roleId,
       reason: reason
     }, {
@@ -126,14 +126,35 @@ async function updateUserRank(userId, roleId, reason = '') {
     console.log('✅ Rank updated successfully');
     return response.data;
   } catch (error) {
-    console.error('❌ Error in updateUserRank:');
+    console.error('❌ Error in updateUserRank (POST):', error.message);
     if (error.response) {
       console.error('Status:', error.response.status);
       console.error('Data:', error.response.data);
-    } else {
-      console.error('Error:', error.message);
     }
-    throw error;
+    
+    // If POST fails, try PATCH as fallback
+    console.log('🔄 Trying PATCH as fallback...');
+    try {
+      const response = await axios.patch(url, {
+        roleId: roleId,
+        reason: reason
+      }, {
+        headers: {
+          'x-api-key': API_KEY.trim(),
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      console.log('✅ Rank updated successfully (PATCH)');
+      return response.data;
+    } catch (fallbackError) {
+      console.error('❌ Fallback PATCH also failed:', fallbackError.message);
+      if (fallbackError.response) {
+        console.error('Status:', fallbackError.response.status);
+        console.error('Data:', fallbackError.response.data);
+      }
+      throw fallbackError;
+    }
   }
 }
 
@@ -178,13 +199,48 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
   }
 });
 
+// ---------- TEST USER ROLE ENDPOINT ----------
+app.get('/utils/roblox/test-user-role/:username', async (req, res) => {
+  console.log('🧪 Testing user role endpoint...');
+  
+  try {
+    const { username } = req.params;
+    const userId = await getUserId(username);
+    
+    const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
+    const response = await axios.get(url, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    res.json({
+      success: true,
+      userId: userId,
+      role: response.data.role,
+      fullResponse: response.data
+    });
+  } catch (error) {
+    console.error('❌ Test failed:', error.message);
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', error.response.data);
+    }
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.response?.data || null
+    });
+  }
+});
+
 // ---------- PROMOTE ENDPOINT ----------
 app.post('/utils/roblox/promote', async (req, res) => {
   console.log('📥 PROMOTE request received');
   console.log('📋 Body:', req.body);
   
   try {
-    // Check auth
     const apiKey = req.headers['x-api-key'];
     if (!apiKey) {
       return res.status(401).json({ error: 'Missing x-api-key header' });
@@ -198,19 +254,15 @@ app.post('/utils/roblox/promote', async (req, res) => {
       return res.status(400).json({ error: 'robloxUsername and reason are required' });
     }
 
-    // Get user ID
     const userId = await getUserId(robloxUsername);
     console.log(`👤 User ID: ${userId}`);
     
-    // Get all roles
     const roles = await getGroupRoles();
     console.log(`📋 Found ${roles.length} roles`);
     
-    // Get user's current role
     const currentRole = await getUserRole(userId);
     console.log(`📋 Current role: ${currentRole.name} (rank ${currentRole.rank})`);
     
-    // Find current index
     const currentIdx = roles.findIndex(r => r.id === currentRole.id);
     if (currentIdx === -1) {
       return res.status(404).json({ error: 'Current role not found in group' });
@@ -222,7 +274,6 @@ app.post('/utils/roblox/promote', async (req, res) => {
     const newRole = roles[currentIdx + 1];
     console.log(`📋 New role: ${newRole.name} (rank ${newRole.rank})`);
     
-    // Update rank
     await updateUserRank(userId, newRole.id, reason);
     
     res.json({
