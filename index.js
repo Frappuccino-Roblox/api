@@ -17,79 +17,146 @@ console.log(`🔐 Auth Token: ${AUTH_TOKEN ? 'set' : 'MISSING'}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
 
-// ---------- EXACT SAME PATTERN AS TEST ENDPOINT ----------
+// ---------- Helper Functions with Better Error Handling ----------
 
-// Function to get group roles (EXACT same as test endpoint)
 async function getGroupRoles() {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
   console.log(`📤 GET ${url}`);
   
-  const response = await axios.get(url, {
-    headers: {
-      'x-api-key': API_KEY.trim(),
-      'Content-Type': 'application/json',
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    console.log('📊 Full response:', JSON.stringify(response.data, null, 2));
+    
+    // Check if we got a valid response
+    if (!response.data) {
+      throw new Error('No data received from Roblox API');
     }
-  });
-  
-  console.log('✅ Got roles response');
-  return response.data.roles.sort((a, b) => a.rank - b.rank);
+    
+    // Check if there's an error in the response
+    if (response.data.error) {
+      throw new Error(`Roblox API error: ${response.data.error}`);
+    }
+    
+    // Check if roles exist
+    if (!response.data.roles) {
+      console.error('❌ No roles in response. Response structure:', Object.keys(response.data));
+      throw new Error('No roles array in response. Response structure: ' + Object.keys(response.data).join(', '));
+    }
+    
+    if (!Array.isArray(response.data.roles)) {
+      throw new Error('Roles is not an array. Type: ' + typeof response.data.roles);
+    }
+    
+    console.log(`✅ Found ${response.data.roles.length} roles`);
+    return response.data.roles.sort((a, b) => a.rank - b.rank);
+  } catch (error) {
+    console.error('❌ Error in getGroupRoles:');
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Headers:', error.response.headers);
+      console.error('Data:', JSON.stringify(error.response.data, null, 2));
+    } else {
+      console.error('Error:', error.message);
+    }
+    throw error;
+  }
 }
 
-// Function to get user role
 async function getUserRole(userId) {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/users/${userId}`;
   console.log(`📤 GET ${url}`);
   
-  const response = await axios.get(url, {
-    headers: {
-      'x-api-key': API_KEY.trim(),
-      'Content-Type': 'application/json',
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    console.log('📊 User role response:', JSON.stringify(response.data, null, 2));
+    
+    if (!response.data) {
+      throw new Error('No data received from Roblox API');
     }
-  });
-  
-  console.log('✅ Got user role response');
-  return response.data.role;
+    
+    if (!response.data.role) {
+      console.error('❌ No role in response. Response:', response.data);
+      throw new Error('No role found for user');
+    }
+    
+    return response.data.role;
+  } catch (error) {
+    console.error('❌ Error in getUserRole:');
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', JSON.stringify(error.response.data, null, 2));
+    } else {
+      console.error('Error:', error.message);
+    }
+    throw error;
+  }
 }
 
-// Function to change user rank
 async function changeUserRank(userId, roleId, reason = '') {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/users/${userId}`;
   const payload = { roleId };
   if (reason) payload.reason = reason;
   
   console.log(`📤 PATCH ${url}`);
-  console.log(`📦 Payload:`, payload);
+  console.log(`📦 Payload:`, JSON.stringify(payload, null, 2));
   
-  const response = await axios.patch(url, payload, {
-    headers: {
-      'x-api-key': API_KEY.trim(),
-      'Content-Type': 'application/json',
+  try {
+    const response = await axios.patch(url, payload, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    console.log('✅ Rank changed successfully');
+    return response.data;
+  } catch (error) {
+    console.error('❌ Error in changeUserRank:');
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', JSON.stringify(error.response.data, null, 2));
+    } else {
+      console.error('Error:', error.message);
     }
-  });
-  
-  console.log('✅ Rank changed successfully');
-  return response.data;
+    throw error;
+  }
 }
 
-// Function to get user ID
 async function getUserId(username) {
   const url = `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}`;
   console.log(`📤 GET ${url}`);
   
-  const response = await axios.get(url);
-  const data = response.data;
-  
-  if (!data.data || data.data.length === 0) {
-    throw new Error('User not found');
+  try {
+    const response = await axios.get(url);
+    const data = response.data;
+    
+    if (!data.data || data.data.length === 0) {
+      throw new Error(`User "${username}" not found`);
+    }
+    
+    const user = data.data.find(u => u.name.toLowerCase() === username.toLowerCase());
+    if (!user) {
+      throw new Error(`No exact match for username "${username}"`);
+    }
+    
+    console.log(`✅ Found user: ${user.name} (${user.id})`);
+    return user.id;
+  } catch (error) {
+    console.error('❌ Error in getUserId:', error.message);
+    throw error;
   }
-  
-  const user = data.data.find(u => u.name.toLowerCase() === username.toLowerCase());
-  if (!user) {
-    throw new Error(`No exact match for username "${username}"`);
-  }
-  
-  console.log(`✅ Found user: ${user.name} (${user.id})`);
-  return user.id;
 }
 
 // ---------- TEST ENDPOINT (NO AUTH) ----------
@@ -106,6 +173,7 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
     });
     
     console.log('✅ Test successful!');
+    console.log('📊 Response:', JSON.stringify(response.data, null, 2));
     
     res.json({
       success: true,
@@ -114,7 +182,7 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
       rolesCount: response.data.roles?.length || 0,
       dataStructure: Object.keys(response.data),
       apiKeyPrefix: API_KEY.substring(0, 20) + '...',
-      sampleRole: response.data.roles?.[0] || null
+      fullResponse: response.data
     });
   } catch (error) {
     console.error('❌ Test failed:', error.message);
@@ -125,18 +193,18 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data
+      details: error.response?.data || null
     });
   }
 });
 
-// ---------- PROMOTE ENDPOINT (SAME PATTERN AS TEST) ----------
+// ---------- PROMOTE ENDPOINT ----------
 app.post('/utils/roblox/promote', async (req, res) => {
   console.log('📥 PROMOTE request received');
   console.log('📋 Body:', req.body);
   
   try {
-    // Check auth manually (like test endpoint but with auth check)
+    // Check auth
     const apiKey = req.headers['x-api-key'];
     if (!apiKey) {
       return res.status(401).json({ error: 'Missing x-api-key header' });
@@ -153,13 +221,13 @@ app.post('/utils/roblox/promote', async (req, res) => {
     // Get user ID
     const userId = await getUserId(robloxUsername);
     
-    // Get all roles (EXACT same as test endpoint)
+    // Get all roles
     const roles = await getGroupRoles();
     
     // Get user's current role
     const currentRole = await getUserRole(userId);
     
-    // Find next role
+    // Find current index
     const currentIdx = roles.findIndex(r => r.id === currentRole.id);
     if (currentIdx === -1) {
       return res.status(404).json({ error: 'Current role not found in group' });
@@ -179,7 +247,7 @@ app.post('/utils/roblox/promote', async (req, res) => {
       newRank: newRole.name
     });
   } catch (error) {
-    console.error('❌ Error:', error.message);
+    console.error('❌ Error in promote:', error.message);
     if (error.response) {
       console.error('Status:', error.response.status);
       console.error('Data:', error.response.data);
@@ -191,13 +259,13 @@ app.post('/utils/roblox/promote', async (req, res) => {
   }
 });
 
-// ---------- DEMOTE ENDPOINT (SAME PATTERN) ----------
+// ---------- DEMOTE ENDPOINT ----------
 app.post('/utils/roblox/demote', async (req, res) => {
   console.log('📥 DEMOTE request received');
   console.log('📋 Body:', req.body);
   
   try {
-    // Check auth manually
+    // Check auth
     const apiKey = req.headers['x-api-key'];
     if (!apiKey) {
       return res.status(401).json({ error: 'Missing x-api-key header' });
@@ -232,7 +300,7 @@ app.post('/utils/roblox/demote', async (req, res) => {
       newRank: newRole.name
     });
   } catch (error) {
-    console.error('❌ Error:', error.message);
+    console.error('❌ Error in demote:', error.message);
     if (error.response) {
       console.error('Status:', error.response.status);
       console.error('Data:', error.response.data);
@@ -244,13 +312,13 @@ app.post('/utils/roblox/demote', async (req, res) => {
   }
 });
 
-// ---------- SETRANK ENDPOINT (SAME PATTERN) ----------
+// ---------- SETRANK ENDPOINT ----------
 app.post('/utils/roblox/setrank', async (req, res) => {
   console.log('📥 SETRANK request received');
   console.log('📋 Body:', req.body);
   
   try {
-    // Check auth manually
+    // Check auth
     const apiKey = req.headers['x-api-key'];
     if (!apiKey) {
       return res.status(401).json({ error: 'Missing x-api-key header' });
@@ -280,7 +348,7 @@ app.post('/utils/roblox/setrank', async (req, res) => {
       newRank: targetRole.name
     });
   } catch (error) {
-    console.error('❌ Error:', error.message);
+    console.error('❌ Error in setrank:', error.message);
     if (error.response) {
       console.error('Status:', error.response.status);
       console.error('Data:', error.response.data);
