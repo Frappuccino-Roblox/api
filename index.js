@@ -1,4 +1,4 @@
-// server.js - Fixed with correct OpenCloud endpoints
+// server.js - Working version based on the tutorial
 const express = require('express');
 const axios = require('axios');
 
@@ -13,7 +13,6 @@ const AUTH_TOKEN = process.env.API_AUTH_TOKEN;
 console.log('🚀 Server starting...');
 console.log(`📦 Group ID: ${GROUP_ID}`);
 console.log(`🔑 API Key: ${API_KEY ? 'set' : 'MISSING'}`);
-console.log(`🔐 Auth Token: ${AUTH_TOKEN ? 'set' : 'MISSING'}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
 
@@ -77,7 +76,7 @@ async function getUserId(username) {
   }
 }
 
-// Get the membership ID for a user (this is the key!)
+// Get the membership ID for a user
 async function getMembershipId(userId) {
   const filter = `user == 'users/${userId}'`;
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships?maxPageSize=10&filter=${encodeURIComponent(filter)}`;
@@ -91,9 +90,9 @@ async function getMembershipId(userId) {
       }
     });
     
-    console.log('📊 Membership response:', response.data);
+    console.log('📊 Membership response:', JSON.stringify(response.data, null, 2));
     
-    if (response.data.groupMemberships && response.data.groupMemberships[0]) {
+    if (response.data.groupMemberships && response.data.groupMemberships.length > 0) {
       // Path format: groups/{group_id}/memberships/{group_membership_id}
       const path = response.data.groupMemberships[0].path;
       const parts = path.split('/');
@@ -115,21 +114,20 @@ async function getMembershipId(userId) {
 
 // Update the user's rank using the membership ID
 async function updateUserRank(userId, roleId, reason = '') {
-  // First, get the membership ID
-  const membershipId = await getMembershipId(userId);
-  
-  // Then update the membership with the new role
-  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
-  console.log(`📤 PATCH ${url}`);
-  
-  const payload = {
-    role: `groups/${GROUP_ID}/roles/${roleId}`
-  };
-  // Reason is not supported in the membership PATCH endpoint
-  
-  console.log(`📦 Payload:`, payload);
-  
   try {
+    // First, get the membership ID
+    const membershipId = await getMembershipId(userId);
+    
+    // Then update the membership with the new role
+    const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+    console.log(`📤 PATCH ${url}`);
+    
+    const payload = {
+      role: `groups/${GROUP_ID}/roles/${roleId}`
+    };
+    
+    console.log(`📦 Payload:`, JSON.stringify(payload, null, 2));
+    
     const response = await axios.patch(url, payload, {
       headers: {
         'x-api-key': API_KEY.trim(),
@@ -143,7 +141,7 @@ async function updateUserRank(userId, roleId, reason = '') {
     console.error('❌ Error in updateUserRank:');
     if (error.response) {
       console.error('Status:', error.response.status);
-      console.error('Data:', error.response.data);
+      console.error('Data:', JSON.stringify(error.response.data, null, 2));
     } else {
       console.error('Error:', error.message);
     }
@@ -151,7 +149,44 @@ async function updateUserRank(userId, roleId, reason = '') {
   }
 }
 
-// ---------- TEST ENDPOINT ----------
+// Get user's current role from membership
+async function getUserCurrentRole(userId) {
+  const membershipId = await getMembershipId(userId);
+  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+  console.log(`📤 GET ${url}`);
+  
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    console.log('📊 Membership data:', JSON.stringify(response.data, null, 2));
+    
+    // Extract role ID from the role path
+    const rolePath = response.data.role;
+    if (rolePath) {
+      const roleId = rolePath.split('/').pop();
+      console.log(`✅ Current role ID: ${roleId}`);
+      return roleId;
+    }
+    
+    throw new Error('No role found in membership');
+  } catch (error) {
+    console.error('❌ Error in getUserCurrentRole:', error.message);
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', error.response.data);
+    }
+    throw error;
+  }
+}
+
+// ---------- TEST ENDPOINTS ----------
+
+// Test API key
 app.get('/utils/roblox/test-api-key', async (req, res) => {
   console.log('🧪 Running API key test...');
   
@@ -192,7 +227,7 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
   }
 });
 
-// ---------- TEST MEMBERSHIP ENDPOINT ----------
+// Test membership lookup
 app.get('/utils/roblox/test-membership/:username', async (req, res) => {
   console.log('🧪 Testing membership lookup...');
   
@@ -200,11 +235,18 @@ app.get('/utils/roblox/test-membership/:username', async (req, res) => {
     const { username } = req.params;
     const userId = await getUserId(username);
     const membershipId = await getMembershipId(userId);
+    const currentRoleId = await getUserCurrentRole(userId);
+    
+    // Get all roles to find the role name
+    const roles = await getGroupRoles();
+    const currentRole = roles.find(r => r.id === currentRoleId);
     
     res.json({
       success: true,
       userId: userId,
       membershipId: membershipId,
+      currentRoleId: currentRoleId,
+      currentRoleName: currentRole ? currentRole.displayName : 'Unknown',
       message: `User ${username} is in the group with membership ID ${membershipId}`
     });
   } catch (error) {
@@ -221,7 +263,9 @@ app.get('/utils/roblox/test-membership/:username', async (req, res) => {
   }
 });
 
-// ---------- PROMOTE ENDPOINT ----------
+// ---------- RANKING ENDPOINTS ----------
+
+// PROMOTE
 app.post('/utils/roblox/promote', async (req, res) => {
   console.log('📥 PROMOTE request received');
   console.log('📋 Body:', req.body);
@@ -240,28 +284,19 @@ app.post('/utils/roblox/promote', async (req, res) => {
       return res.status(400).json({ error: 'robloxUsername and reason are required' });
     }
 
+    // Get user ID
     const userId = await getUserId(robloxUsername);
     console.log(`👤 User ID: ${userId}`);
     
+    // Get all roles
     const roles = await getGroupRoles();
     console.log(`📋 Found ${roles.length} roles`);
     
-    // Get user's current role by getting membership info
-    const membershipId = await getMembershipId(userId);
-    const membershipUrl = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
-    const membershipResponse = await axios.get(membershipUrl, {
-      headers: {
-        'x-api-key': API_KEY.trim(),
-        'Content-Type': 'application/json',
-      }
-    });
+    // Get user's current role ID from membership
+    const currentRoleId = await getUserCurrentRole(userId);
+    console.log(`📋 Current role ID: ${currentRoleId}`);
     
-    console.log('📊 Membership data:', membershipResponse.data);
-    
-    // Extract current role from membership
-    const currentRolePath = membershipResponse.data.role;
-    const currentRoleId = currentRolePath.split('/').pop();
-    
+    // Find current index
     const currentIdx = roles.findIndex(r => r.id === currentRoleId);
     if (currentIdx === -1) {
       return res.status(404).json({ error: 'Current role not found in group' });
@@ -271,14 +306,15 @@ app.post('/utils/roblox/promote', async (req, res) => {
     }
     
     const newRole = roles[currentIdx + 1];
-    console.log(`📋 New role: ${newRole.name} (rank ${newRole.rank})`);
+    console.log(`📋 New role: ${newRole.displayName} (rank ${newRole.rank})`);
     
+    // Update rank using membership
     await updateUserRank(userId, newRole.id, reason);
     
     res.json({
       success: true,
-      message: `Promoted ${robloxUsername} to ${newRole.name}`,
-      newRank: newRole.name
+      message: `Promoted ${robloxUsername} to ${newRole.displayName}`,
+      newRank: newRole.displayName
     });
   } catch (error) {
     console.error('❌ Error in promote:', error.message);
@@ -293,7 +329,7 @@ app.post('/utils/roblox/promote', async (req, res) => {
   }
 });
 
-// ---------- DEMOTE ENDPOINT ----------
+// DEMOTE
 app.post('/utils/roblox/demote', async (req, res) => {
   console.log('📥 DEMOTE request received');
   console.log('📋 Body:', req.body);
@@ -314,18 +350,7 @@ app.post('/utils/roblox/demote', async (req, res) => {
 
     const userId = await getUserId(robloxUsername);
     const roles = await getGroupRoles();
-    
-    const membershipId = await getMembershipId(userId);
-    const membershipUrl = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
-    const membershipResponse = await axios.get(membershipUrl, {
-      headers: {
-        'x-api-key': API_KEY.trim(),
-        'Content-Type': 'application/json',
-      }
-    });
-    
-    const currentRolePath = membershipResponse.data.role;
-    const currentRoleId = currentRolePath.split('/').pop();
+    const currentRoleId = await getUserCurrentRole(userId);
     
     const currentIdx = roles.findIndex(r => r.id === currentRoleId);
     if (currentIdx === -1) {
@@ -340,8 +365,8 @@ app.post('/utils/roblox/demote', async (req, res) => {
     
     res.json({
       success: true,
-      message: `Demoted ${robloxUsername} to ${newRole.name}`,
-      newRank: newRole.name
+      message: `Demoted ${robloxUsername} to ${newRole.displayName}`,
+      newRank: newRole.displayName
     });
   } catch (error) {
     console.error('❌ Error in demote:', error.message);
@@ -356,7 +381,7 @@ app.post('/utils/roblox/demote', async (req, res) => {
   }
 });
 
-// ---------- SETRANK ENDPOINT ----------
+// SETRANK
 app.post('/utils/roblox/setrank', async (req, res) => {
   console.log('📥 SETRANK request received');
   console.log('📋 Body:', req.body);
@@ -378,7 +403,7 @@ app.post('/utils/roblox/setrank', async (req, res) => {
     const userId = await getUserId(robloxUsername);
     const roles = await getGroupRoles();
     
-    const targetRole = roles.find(r => r.name.toLowerCase() === rankName.toLowerCase());
+    const targetRole = roles.find(r => r.displayName.toLowerCase() === rankName.toLowerCase());
     if (!targetRole) {
       return res.status(404).json({ error: `Rank "${rankName}" not found in group` });
     }
@@ -387,8 +412,8 @@ app.post('/utils/roblox/setrank', async (req, res) => {
     
     res.json({
       success: true,
-      message: `Set ${robloxUsername} to ${targetRole.name}`,
-      newRank: targetRole.name
+      message: `Set ${robloxUsername} to ${targetRole.displayName}`,
+      newRank: targetRole.displayName
     });
   } catch (error) {
     console.error('❌ Error in setrank:', error.message);
