@@ -1,4 +1,4 @@
-// server.js (Vercel-compatible version with proper API key handling)
+// server.js (Vercel-compatible version with fixed error handling)
 const express = require('express');
 const axios = require('axios');
 
@@ -66,16 +66,36 @@ async function getUserId(username) {
 async function getGroupRoles() {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
   
-  // Log the request being made (for debugging)
   console.log(`📤 GET ${url}`);
   
-  const response = await axios.get(url, {
-    headers: {
-      'x-api-key': API_KEY.trim(),  // Trim any whitespace
-      'Content-Type': 'application/json',
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    // Log the full response for debugging
+    console.log('📄 Full response:', JSON.stringify(response.data, null, 2));
+    
+    // Check if roles exist in response
+    if (!response.data || !response.data.roles) {
+      console.error('❌ No roles found in response:', response.data);
+      throw new Error('No roles data received from Roblox API');
     }
-  });
-  return response.data.roles.sort((a, b) => a.rank - b.rank);
+    
+    return response.data.roles.sort((a, b) => a.rank - b.rank);
+  } catch (error) {
+    console.error('❌ Error fetching group roles:');
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', error.response.data);
+    } else {
+      console.error('Error:', error.message);
+    }
+    throw error;
+  }
 }
 
 /** Get current role of a user */
@@ -84,13 +104,30 @@ async function getUserRole(userId) {
   
   console.log(`📤 GET ${url}`);
   
-  const response = await axios.get(url, {
-    headers: {
-      'x-api-key': API_KEY.trim(),  // Trim any whitespace
-      'Content-Type': 'application/json',
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    if (!response.data || !response.data.role) {
+      console.error('❌ No role found in response:', response.data);
+      throw new Error('User role not found');
     }
-  });
-  return response.data.role;
+    
+    return response.data.role;
+  } catch (error) {
+    console.error('❌ Error fetching user role:');
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', error.response.data);
+    } else {
+      console.error('Error:', error.message);
+    }
+    throw error;
+  }
 }
 
 /** Change user's rank */
@@ -102,13 +139,24 @@ async function changeUserRank(userId, roleId, reason = '') {
   console.log(`📤 PATCH ${url}`);
   console.log(`📦 Payload:`, payload);
   
-  const response = await axios.patch(url, payload, {
-    headers: {
-      'x-api-key': API_KEY.trim(),  // Trim any whitespace
-      'Content-Type': 'application/json',
+  try {
+    const response = await axios.patch(url, payload, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    return response.data;
+  } catch (error) {
+    console.error('❌ Error changing user rank:');
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Data:', error.response.data);
+    } else {
+      console.error('Error:', error.message);
     }
-  });
-  return response.data;
+    throw error;
+  }
 }
 
 // ---------- Endpoints ----------
@@ -221,9 +269,10 @@ function handleError(res, error) {
     console.error('📄 Response data:', error.response.data);
   }
   
-  if (axios.isAxiosError(error)) {
-    const status = error.response?.status || 500;
-    const data = error.response?.data || {};
+  // Check if it's an axios error with response
+  if (axios.isAxiosError(error) && error.response) {
+    const status = error.response.status || 500;
+    const data = error.response.data || {};
     
     // Special handling for auth errors
     if (status === 401) {
@@ -242,6 +291,14 @@ function handleError(res, error) {
         suggestion: 'Go to https://create.roblox.com/dashboard and ensure your API key has groups:read and groups:write permissions'
       });
     }
+    if (status === 404) {
+      return res.status(404).json({
+        error: 'Group or user not found',
+        message: 'The group ID or user may not exist',
+        details: data,
+        suggestion: `Check if group ID ${GROUP_ID} is correct`
+      });
+    }
     
     return res.status(status).json({
       error: 'Roblox API error',
@@ -249,8 +306,17 @@ function handleError(res, error) {
     });
   }
   
+  // Handle our custom errors
+  if (error.message) {
+    return res.status(500).json({
+      error: error.message,
+      suggestion: 'Check the server logs for more details'
+    });
+  }
+  
   res.status(500).json({
-    error: error.message || 'Internal server error',
+    error: 'Internal server error',
+    message: error.message || 'Unknown error occurred'
   });
 }
 
@@ -266,13 +332,20 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
       }
     });
     
+    // Check if we got valid data
+    const hasRoles = response.data && Array.isArray(response.data.roles);
+    
     res.json({
       success: true,
       message: 'API key is working!',
-      rolesCount: response.data.roles?.length || 0,
-      apiKeyPrefix: API_KEY.substring(0, 20) + '...'
+      hasRoles: hasRoles,
+      rolesCount: hasRoles ? response.data.roles.length : 0,
+      dataStructure: Object.keys(response.data),
+      apiKeyPrefix: API_KEY.substring(0, 20) + '...',
+      sampleRole: hasRoles && response.data.roles.length > 0 ? response.data.roles[0] : null
     });
   } catch (error) {
+    console.error('❌ API key test failed:', error.message);
     res.status(500).json({
       success: false,
       message: 'API key test failed',
