@@ -1,4 +1,4 @@
-// server.js - Fixed with correct endpoints
+// server.js - Fixed with correct OpenCloud endpoints
 const express = require('express');
 const axios = require('axios');
 
@@ -16,12 +16,11 @@ console.log(`🔑 API Key: ${API_KEY ? 'set' : 'MISSING'}`);
 console.log(`🔐 Auth Token: ${AUTH_TOKEN ? 'set' : 'MISSING'}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
-const GROUPS_API = 'https://groups.roblox.com/v1';
 
 // ---------- Helper Functions ----------
 
 async function getGroupRoles() {
-  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
+  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles?maxPageSize=100`;
   console.log(`📤 GET ${url}`);
   
   try {
@@ -78,8 +77,10 @@ async function getUserId(username) {
   }
 }
 
-async function getUserRole(userId) {
-  const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
+// Get the membership ID for a user (this is the key!)
+async function getMembershipId(userId) {
+  const filter = `user == 'users/${userId}'`;
+  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships?maxPageSize=10&filter=${encodeURIComponent(filter)}`;
   console.log(`📤 GET ${url}`);
   
   try {
@@ -90,10 +91,20 @@ async function getUserRole(userId) {
       }
     });
     
-    console.log('📊 User role response:', response.data);
-    return response.data.role;
+    console.log('📊 Membership response:', response.data);
+    
+    if (response.data.groupMemberships && response.data.groupMemberships[0]) {
+      // Path format: groups/{group_id}/memberships/{group_membership_id}
+      const path = response.data.groupMemberships[0].path;
+      const parts = path.split('/');
+      const membershipId = parts[parts.length - 1];
+      console.log(`✅ Found membership ID: ${membershipId}`);
+      return membershipId;
+    }
+    
+    throw new Error(`User ${userId} is not in the group`);
   } catch (error) {
-    console.error('❌ Error in getUserRole:', error.message);
+    console.error('❌ Error in getMembershipId:', error.message);
     if (error.response) {
       console.error('Status:', error.response.status);
       console.error('Data:', error.response.data);
@@ -102,21 +113,24 @@ async function getUserRole(userId) {
   }
 }
 
+// Update the user's rank using the membership ID
 async function updateUserRank(userId, roleId, reason = '') {
-  // CORRECT ENDPOINT: Use POST to change user rank
-  // The endpoint is /groups/{groupId}/users/{userId}
-  // But we need to use the correct method
+  // First, get the membership ID
+  const membershipId = await getMembershipId(userId);
   
-  // Try using OpenCloud with POST instead of PATCH
-  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/users/${userId}`;
-  console.log(`📤 POST ${url}`);
-  console.log(`📦 Payload:`, { roleId, reason });
+  // Then update the membership with the new role
+  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+  console.log(`📤 PATCH ${url}`);
+  
+  const payload = {
+    role: `groups/${GROUP_ID}/roles/${roleId}`
+  };
+  // Reason is not supported in the membership PATCH endpoint
+  
+  console.log(`📦 Payload:`, payload);
   
   try {
-    const response = await axios.post(url, {
-      roleId: roleId,
-      reason: reason
-    }, {
+    const response = await axios.patch(url, payload, {
       headers: {
         'x-api-key': API_KEY.trim(),
         'Content-Type': 'application/json',
@@ -126,35 +140,14 @@ async function updateUserRank(userId, roleId, reason = '') {
     console.log('✅ Rank updated successfully');
     return response.data;
   } catch (error) {
-    console.error('❌ Error in updateUserRank (POST):', error.message);
+    console.error('❌ Error in updateUserRank:');
     if (error.response) {
       console.error('Status:', error.response.status);
       console.error('Data:', error.response.data);
+    } else {
+      console.error('Error:', error.message);
     }
-    
-    // If POST fails, try PATCH as fallback
-    console.log('🔄 Trying PATCH as fallback...');
-    try {
-      const response = await axios.patch(url, {
-        roleId: roleId,
-        reason: reason
-      }, {
-        headers: {
-          'x-api-key': API_KEY.trim(),
-          'Content-Type': 'application/json',
-        }
-      });
-      
-      console.log('✅ Rank updated successfully (PATCH)');
-      return response.data;
-    } catch (fallbackError) {
-      console.error('❌ Fallback PATCH also failed:', fallbackError.message);
-      if (fallbackError.response) {
-        console.error('Status:', fallbackError.response.status);
-        console.error('Data:', fallbackError.response.data);
-      }
-      throw fallbackError;
-    }
+    throw error;
   }
 }
 
@@ -163,7 +156,7 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
   console.log('🧪 Running API key test...');
   
   try {
-    const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
+    const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles?maxPageSize=10`;
     const response = await axios.get(url, {
       headers: {
         'x-api-key': API_KEY.trim(),
@@ -199,27 +192,20 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
   }
 });
 
-// ---------- TEST USER ROLE ENDPOINT ----------
-app.get('/utils/roblox/test-user-role/:username', async (req, res) => {
-  console.log('🧪 Testing user role endpoint...');
+// ---------- TEST MEMBERSHIP ENDPOINT ----------
+app.get('/utils/roblox/test-membership/:username', async (req, res) => {
+  console.log('🧪 Testing membership lookup...');
   
   try {
     const { username } = req.params;
     const userId = await getUserId(username);
-    
-    const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-    const response = await axios.get(url, {
-      headers: {
-        'x-api-key': API_KEY.trim(),
-        'Content-Type': 'application/json',
-      }
-    });
+    const membershipId = await getMembershipId(userId);
     
     res.json({
       success: true,
       userId: userId,
-      role: response.data.role,
-      fullResponse: response.data
+      membershipId: membershipId,
+      message: `User ${username} is in the group with membership ID ${membershipId}`
     });
   } catch (error) {
     console.error('❌ Test failed:', error.message);
@@ -260,10 +246,23 @@ app.post('/utils/roblox/promote', async (req, res) => {
     const roles = await getGroupRoles();
     console.log(`📋 Found ${roles.length} roles`);
     
-    const currentRole = await getUserRole(userId);
-    console.log(`📋 Current role: ${currentRole.name} (rank ${currentRole.rank})`);
+    // Get user's current role by getting membership info
+    const membershipId = await getMembershipId(userId);
+    const membershipUrl = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+    const membershipResponse = await axios.get(membershipUrl, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
     
-    const currentIdx = roles.findIndex(r => r.id === currentRole.id);
+    console.log('📊 Membership data:', membershipResponse.data);
+    
+    // Extract current role from membership
+    const currentRolePath = membershipResponse.data.role;
+    const currentRoleId = currentRolePath.split('/').pop();
+    
+    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
     if (currentIdx === -1) {
       return res.status(404).json({ error: 'Current role not found in group' });
     }
@@ -315,9 +314,20 @@ app.post('/utils/roblox/demote', async (req, res) => {
 
     const userId = await getUserId(robloxUsername);
     const roles = await getGroupRoles();
-    const currentRole = await getUserRole(userId);
     
-    const currentIdx = roles.findIndex(r => r.id === currentRole.id);
+    const membershipId = await getMembershipId(userId);
+    const membershipUrl = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+    const membershipResponse = await axios.get(membershipUrl, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    const currentRolePath = membershipResponse.data.role;
+    const currentRoleId = currentRolePath.split('/').pop();
+    
+    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
     if (currentIdx === -1) {
       return res.status(404).json({ error: 'Current role not found in group' });
     }
