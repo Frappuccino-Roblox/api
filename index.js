@@ -1,4 +1,4 @@
-// server.js - Using Groups API for ranking (more reliable)
+// server.js - OpenCloud only (no cookies)
 const express = require('express');
 const axios = require('axios');
 
@@ -13,14 +13,13 @@ const AUTH_TOKEN = process.env.API_AUTH_TOKEN;
 console.log('🚀 Server starting...');
 console.log(`📦 Group ID: ${GROUP_ID}`);
 console.log(`🔑 API Key: ${API_KEY ? 'set' : 'MISSING'}`);
+console.log(`🔐 Auth Token: ${AUTH_TOKEN ? 'set' : 'MISSING'}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
-const GROUPS_API = 'https://groups.roblox.com/v1';
 
 // ---------- Helper Functions ----------
 
 async function getGroupRoles() {
-  // Using OpenCloud - this works ✅
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles?maxPageSize=100`;
   console.log(`📤 GET ${url}`);
   
@@ -78,128 +77,60 @@ async function getUserId(username) {
   }
 }
 
-// ---------- USING GROUPS API (NOT OPENCLOUD) FOR RANKING ----------
-// This is the traditional Roblox Groups API that uses API keys
+// ---------- OPENCLOUD RANKING FUNCTIONS ----------
 
-async function promoteUserTraditional(userId, reason = '') {
-  // The traditional Groups API for promoting
-  const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-  console.log(`📤 POST ${url}`);
-  console.log(`📦 Reason: ${reason}`);
+async function getMembershipId(userId) {
+  const filter = `user == 'users/${userId}'`;
+  const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships?maxPageSize=10&filter=${encodeURIComponent(filter)}`;
+  console.log(`📤 GET ${url}`);
   
   try {
-    // First, get the user's current role
-    const getRoleUrl = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-    const roleResponse = await axios.get(getRoleUrl, {
+    const response = await axios.get(url, {
       headers: {
         'x-api-key': API_KEY.trim(),
         'Content-Type': 'application/json',
       }
     });
     
-    console.log('📊 Current role data:', roleResponse.data);
+    console.log('📊 Membership response:', JSON.stringify(response.data, null, 2));
     
-    if (!roleResponse.data || !roleResponse.data.role) {
-      throw new Error('User has no role in the group');
+    if (response.data.groupMemberships && response.data.groupMemberships.length > 0) {
+      const path = response.data.groupMemberships[0].path;
+      const parts = path.split('/');
+      const membershipId = parts[parts.length - 1];
+      console.log(`✅ Found membership ID: ${membershipId}`);
+      return membershipId;
     }
     
-    const currentRoleId = roleResponse.data.role.id;
-    console.log(`📋 Current role ID: ${currentRoleId}`);
-    
-    // Get all roles to find the next one
-    const roles = await getGroupRoles();
-    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
-    
-    if (currentIdx === -1) {
-      throw new Error('Current role not found in role list');
-    }
-    if (currentIdx === roles.length - 1) {
-      throw new Error('User is already at the highest rank');
-    }
-    
-    const newRole = roles[currentIdx + 1];
-    console.log(`📋 New role: ${newRole.displayName} (rank ${newRole.rank})`);
-    
-    // Update the user's role using PATCH
-    const updateUrl = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-    const response = await axios.patch(updateUrl, {
-      roleId: newRole.id
-    }, {
-      headers: {
-        'x-api-key': API_KEY.trim(),
-        'Content-Type': 'application/json',
-      }
-    });
-    
-    console.log('✅ Rank updated successfully');
-    return { newRole: newRole, data: response.data };
+    return null;
   } catch (error) {
-    console.error('❌ Error in promoteUserTraditional:', error.message);
-    if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Data:', JSON.stringify(error.response.data, null, 2));
-    }
-    throw error;
-  }
-}
-
-async function demoteUserTraditional(userId, reason = '') {
-  const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-  console.log(`📤 POST ${url}`);
-  
-  try {
-    // Get user's current role
-    const getRoleUrl = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-    const roleResponse = await axios.get(getRoleUrl, {
-      headers: {
-        'x-api-key': API_KEY.trim(),
-        'Content-Type': 'application/json',
-      }
-    });
-    
-    const currentRoleId = roleResponse.data.role.id;
-    const roles = await getGroupRoles();
-    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
-    
-    if (currentIdx === -1) {
-      throw new Error('Current role not found in role list');
-    }
-    if (currentIdx === 0) {
-      throw new Error('User is already at the lowest rank');
-    }
-    
-    const newRole = roles[currentIdx - 1];
-    
-    // Update the user's role
-    const response = await axios.patch(url, {
-      roleId: newRole.id
-    }, {
-      headers: {
-        'x-api-key': API_KEY.trim(),
-        'Content-Type': 'application/json',
-      }
-    });
-    
-    console.log('✅ Rank updated successfully');
-    return { newRole: newRole, data: response.data };
-  } catch (error) {
-    console.error('❌ Error in demoteUserTraditional:', error.message);
+    console.error('❌ Error in getMembershipId:', error.message);
     if (error.response) {
       console.error('Status:', error.response.status);
       console.error('Data:', error.response.data);
     }
-    throw error;
+    return null;
   }
 }
 
-async function setRankTraditional(userId, roleId, reason = '') {
-  const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-  console.log(`📤 PATCH ${url}`);
-  
+async function updateUserRankOpenCloud(userId, roleId) {
   try {
-    const response = await axios.patch(url, {
-      roleId: roleId
-    }, {
+    // Get membership ID
+    const membershipId = await getMembershipId(userId);
+    if (!membershipId) {
+      throw new Error('User is not in the group');
+    }
+    
+    const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+    console.log(`📤 PATCH ${url}`);
+    
+    const payload = {
+      role: `groups/${GROUP_ID}/roles/${roleId}`
+    };
+    
+    console.log(`📦 Payload:`, JSON.stringify(payload, null, 2));
+    
+    const response = await axios.patch(url, payload, {
       headers: {
         'x-api-key': API_KEY.trim(),
         'Content-Type': 'application/json',
@@ -209,16 +140,20 @@ async function setRankTraditional(userId, roleId, reason = '') {
     console.log('✅ Rank updated successfully');
     return response.data;
   } catch (error) {
-    console.error('❌ Error in setRankTraditional:', error.message);
+    console.error('❌ Error in updateUserRankOpenCloud:');
     if (error.response) {
       console.error('Status:', error.response.status);
-      console.error('Data:', error.response.data);
+      console.error('Data:', JSON.stringify(error.response.data, null, 2));
+    } else {
+      console.error('Error:', error.message);
     }
     throw error;
   }
 }
 
-// ---------- TEST ENDPOINT ----------
+// ---------- TEST ENDPOINTS ----------
+
+// Test API key
 app.get('/utils/roblox/test-api-key', async (req, res) => {
   console.log('🧪 Running API key test...');
   
@@ -259,32 +194,44 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
   }
 });
 
-// Test user role (check if user is in the group)
+// Test if user is in the group
 app.get('/utils/roblox/test-user/:username', async (req, res) => {
-  console.log('🧪 Testing user lookup...');
+  console.log('🧪 Testing user membership...');
   
   try {
     const { username } = req.params;
     const userId = await getUserId(username);
     
-    const url = `${GROUPS_API}/groups/${GROUP_ID}/users/${userId}`;
-    const response = await axios.get(url, {
-      headers: {
-        'x-api-key': API_KEY.trim(),
-        'Content-Type': 'application/json',
-      }
-    });
+    const membershipId = await getMembershipId(userId);
     
-    console.log('📊 User data:', response.data);
-    
-    res.json({
-      success: true,
-      userId: userId,
-      username: username,
-      isInGroup: true,
-      role: response.data.role,
-      fullResponse: response.data
-    });
+    if (membershipId) {
+      // Get the membership details
+      const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+      const response = await axios.get(url, {
+        headers: {
+          'x-api-key': API_KEY.trim(),
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      res.json({
+        success: true,
+        userId: userId,
+        username: username,
+        isInGroup: true,
+        membershipId: membershipId,
+        role: response.data.role,
+        fullResponse: response.data
+      });
+    } else {
+      res.json({
+        success: true,
+        userId: userId,
+        username: username,
+        isInGroup: false,
+        message: 'User is not in the group'
+      });
+    }
   } catch (error) {
     console.error('❌ Test failed:', error.message);
     if (error.response) {
@@ -294,13 +241,14 @@ app.get('/utils/roblox/test-user/:username', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || null,
-      isInGroup: false
+      details: error.response?.data || null
     });
   }
 });
 
-// ---------- PROMOTE ENDPOINT ----------
+// ---------- RANKING ENDPOINTS ----------
+
+// PROMOTE
 app.post('/utils/roblox/promote', async (req, res) => {
   console.log('📥 PROMOTE request received');
   console.log('📋 Body:', req.body);
@@ -319,13 +267,55 @@ app.post('/utils/roblox/promote', async (req, res) => {
       return res.status(400).json({ error: 'robloxUsername and reason are required' });
     }
 
+    // Get user ID
     const userId = await getUserId(robloxUsername);
-    const result = await promoteUserTraditional(userId, reason);
+    console.log(`👤 User ID: ${userId}`);
+    
+    // Check if user is in the group
+    const membershipId = await getMembershipId(userId);
+    if (!membershipId) {
+      return res.status(404).json({ 
+        error: 'User not in group',
+        message: `${robloxUsername} is not a member of this group`
+      });
+    }
+    console.log(`✅ Membership ID: ${membershipId}`);
+    
+    // Get user's current role from membership
+    const membershipUrl = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+    const membershipResponse = await axios.get(membershipUrl, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    const currentRolePath = membershipResponse.data.role;
+    const currentRoleId = currentRolePath.split('/').pop();
+    console.log(`📋 Current role ID: ${currentRoleId}`);
+    
+    // Get all roles
+    const roles = await getGroupRoles();
+    
+    // Find current index
+    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
+    if (currentIdx === -1) {
+      return res.status(404).json({ error: 'Current role not found in group' });
+    }
+    if (currentIdx === roles.length - 1) {
+      return res.status(400).json({ error: 'User is already at the highest rank' });
+    }
+    
+    const newRole = roles[currentIdx + 1];
+    console.log(`📋 New role: ${newRole.displayName} (rank ${newRole.rank})`);
+    
+    // Update rank
+    await updateUserRankOpenCloud(userId, newRole.id);
     
     res.json({
       success: true,
-      message: `Promoted ${robloxUsername} to ${result.newRole.displayName}`,
-      newRank: result.newRole.displayName
+      message: `Promoted ${robloxUsername} to ${newRole.displayName}`,
+      newRank: newRole.displayName
     });
   } catch (error) {
     console.error('❌ Error in promote:', error.message);
@@ -340,7 +330,7 @@ app.post('/utils/roblox/promote', async (req, res) => {
   }
 });
 
-// ---------- DEMOTE ENDPOINT ----------
+// DEMOTE
 app.post('/utils/roblox/demote', async (req, res) => {
   console.log('📥 DEMOTE request received');
   console.log('📋 Body:', req.body);
@@ -360,12 +350,50 @@ app.post('/utils/roblox/demote', async (req, res) => {
     }
 
     const userId = await getUserId(robloxUsername);
-    const result = await demoteUserTraditional(userId, reason);
+    console.log(`👤 User ID: ${userId}`);
+    
+    // Check if user is in the group
+    const membershipId = await getMembershipId(userId);
+    if (!membershipId) {
+      return res.status(404).json({ 
+        error: 'User not in group',
+        message: `${robloxUsername} is not a member of this group`
+      });
+    }
+    console.log(`✅ Membership ID: ${membershipId}`);
+    
+    // Get user's current role
+    const membershipUrl = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`;
+    const membershipResponse = await axios.get(membershipUrl, {
+      headers: {
+        'x-api-key': API_KEY.trim(),
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    const currentRolePath = membershipResponse.data.role;
+    const currentRoleId = currentRolePath.split('/').pop();
+    console.log(`📋 Current role ID: ${currentRoleId}`);
+    
+    const roles = await getGroupRoles();
+    
+    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
+    if (currentIdx === -1) {
+      return res.status(404).json({ error: 'Current role not found in group' });
+    }
+    if (currentIdx === 0) {
+      return res.status(400).json({ error: 'User is already at the lowest rank' });
+    }
+    
+    const newRole = roles[currentIdx - 1];
+    console.log(`📋 New role: ${newRole.displayName} (rank ${newRole.rank})`);
+    
+    await updateUserRankOpenCloud(userId, newRole.id);
     
     res.json({
       success: true,
-      message: `Demoted ${robloxUsername} to ${result.newRole.displayName}`,
-      newRank: result.newRole.displayName
+      message: `Demoted ${robloxUsername} to ${newRole.displayName}`,
+      newRank: newRole.displayName
     });
   } catch (error) {
     console.error('❌ Error in demote:', error.message);
@@ -380,7 +408,7 @@ app.post('/utils/roblox/demote', async (req, res) => {
   }
 });
 
-// ---------- SETRANK ENDPOINT ----------
+// SETRANK
 app.post('/utils/roblox/setrank', async (req, res) => {
   console.log('📥 SETRANK request received');
   console.log('📋 Body:', req.body);
@@ -400,6 +428,18 @@ app.post('/utils/roblox/setrank', async (req, res) => {
     }
 
     const userId = await getUserId(robloxUsername);
+    console.log(`👤 User ID: ${userId}`);
+    
+    // Check if user is in the group
+    const membershipId = await getMembershipId(userId);
+    if (!membershipId) {
+      return res.status(404).json({ 
+        error: 'User not in group',
+        message: `${robloxUsername} is not a member of this group`
+      });
+    }
+    console.log(`✅ Membership ID: ${membershipId}`);
+    
     const roles = await getGroupRoles();
     
     const targetRole = roles.find(r => r.displayName.toLowerCase() === rankName.toLowerCase());
@@ -407,7 +447,9 @@ app.post('/utils/roblox/setrank', async (req, res) => {
       return res.status(404).json({ error: `Rank "${rankName}" not found in group` });
     }
     
-    await setRankTraditional(userId, targetRole.id, reason);
+    console.log(`📋 Target role: ${targetRole.displayName} (rank ${targetRole.rank})`);
+    
+    await updateUserRankOpenCloud(userId, targetRole.id);
     
     res.json({
       success: true,
