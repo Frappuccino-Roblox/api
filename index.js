@@ -72,7 +72,7 @@ async function getGroupRoles() {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
   const response = await axios.get(url, {
     headers: {
-      'Authorization': `Bearer ${API_KEY}`,
+      'x-api-key': `Bearer ${API_KEY}`,
       'Content-Type': 'application/json',
     }
   });
@@ -84,7 +84,7 @@ async function getUserRole(userId) {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/users/${userId}`;
   const response = await axios.get(url, {
     headers: {
-      'Authorization': `Bearer ${API_KEY}`,
+      'x-api-key': `Bearer ${API_KEY}`,
       'Content-Type': 'application/json',
     }
   });
@@ -99,7 +99,7 @@ async function changeUserRank(userId, roleId, reason = '') {
   
   const response = await axios.patch(url, payload, {
     headers: {
-      'Authorization': `Bearer ${API_KEY}`,
+      'x-api-key': `Bearer ${API_KEY}`,
       'Content-Type': 'application/json',
     }
   });
