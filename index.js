@@ -17,7 +17,7 @@ console.log(`🔐 Auth Token: ${AUTH_TOKEN ? 'set' : 'MISSING'}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
 
-// ---------- Helper Functions with Better Error Handling ----------
+// ---------- Helper Functions ----------
 
 async function getGroupRoles() {
   const url = `${OPENCLOUD_BASE}/groups/${GROUP_ID}/roles`;
@@ -31,35 +31,29 @@ async function getGroupRoles() {
       }
     });
     
-    console.log('📊 Full response:', JSON.stringify(response.data, null, 2));
+    console.log('📊 Response keys:', Object.keys(response.data));
     
     // Check if we got a valid response
     if (!response.data) {
       throw new Error('No data received from Roblox API');
     }
     
-    // Check if there's an error in the response
-    if (response.data.error) {
-      throw new Error(`Roblox API error: ${response.data.error}`);
+    // Check for groupRoles (correct field name)
+    if (!response.data.groupRoles) {
+      console.error('❌ No groupRoles in response. Response structure:', Object.keys(response.data));
+      throw new Error('No groupRoles array in response. Response structure: ' + Object.keys(response.data).join(', '));
     }
     
-    // Check if roles exist
-    if (!response.data.roles) {
-      console.error('❌ No roles in response. Response structure:', Object.keys(response.data));
-      throw new Error('No roles array in response. Response structure: ' + Object.keys(response.data).join(', '));
+    if (!Array.isArray(response.data.groupRoles)) {
+      throw new Error('groupRoles is not an array. Type: ' + typeof response.data.groupRoles);
     }
     
-    if (!Array.isArray(response.data.roles)) {
-      throw new Error('Roles is not an array. Type: ' + typeof response.data.roles);
-    }
-    
-    console.log(`✅ Found ${response.data.roles.length} roles`);
-    return response.data.roles.sort((a, b) => a.rank - b.rank);
+    console.log(`✅ Found ${response.data.groupRoles.length} roles`);
+    return response.data.groupRoles.sort((a, b) => a.rank - b.rank);
   } catch (error) {
     console.error('❌ Error in getGroupRoles:');
     if (error.response) {
       console.error('Status:', error.response.status);
-      console.error('Headers:', error.response.headers);
       console.error('Data:', JSON.stringify(error.response.data, null, 2));
     } else {
       console.error('Error:', error.message);
@@ -80,12 +74,13 @@ async function getUserRole(userId) {
       }
     });
     
-    console.log('📊 User role response:', JSON.stringify(response.data, null, 2));
+    console.log('📊 User role response keys:', Object.keys(response.data));
     
     if (!response.data) {
       throw new Error('No data received from Roblox API');
     }
     
+    // Check if role exists
     if (!response.data.role) {
       console.error('❌ No role in response. Response:', response.data);
       throw new Error('No role found for user');
@@ -173,13 +168,13 @@ app.get('/utils/roblox/test-api-key', async (req, res) => {
     });
     
     console.log('✅ Test successful!');
-    console.log('📊 Response:', JSON.stringify(response.data, null, 2));
+    console.log('📊 Response keys:', Object.keys(response.data));
     
     res.json({
       success: true,
       message: 'API key is working!',
-      hasRoles: !!response.data.roles,
-      rolesCount: response.data.roles?.length || 0,
+      hasGroupRoles: !!response.data.groupRoles,
+      rolesCount: response.data.groupRoles?.length || 0,
       dataStructure: Object.keys(response.data),
       apiKeyPrefix: API_KEY.substring(0, 20) + '...',
       fullResponse: response.data
@@ -221,7 +216,7 @@ app.post('/utils/roblox/promote', async (req, res) => {
     // Get user ID
     const userId = await getUserId(robloxUsername);
     
-    // Get all roles
+    // Get all roles (using groupRoles)
     const roles = await getGroupRoles();
     
     // Get user's current role
