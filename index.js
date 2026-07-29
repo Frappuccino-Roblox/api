@@ -1,4 +1,4 @@
-// server.js - FIXED VERSION (No Hardcoding)
+// server.js - FIXED VERSION
 const express = require('express');
 const axios = require('axios');
 
@@ -7,22 +7,19 @@ app.use(express.json());
 
 // ---------- Configuration from Environment ----------
 const GROUP_ID = process.env.ROBLOX_GROUP_ID;
-const API_KEY = process.env.ROBLOX_OPENCLOUD_API_KEY;
-const AUTH_TOKEN = process.env.API_AUTH_TOKEN;
+const API_KEY = process.env.ROBLOX_OPENCLOUD_API_KEY || '';
+const AUTH_TOKEN = process.env.API_AUTH_TOKEN || '';
 
-// Validate required variables
+// Serverless-friendly validation (No process.exit)
 if (!GROUP_ID || !API_KEY || !AUTH_TOKEN) {
-  console.error('❌ Missing required environment variables:');
+  console.error('❌ WARNING: Missing required environment variables. API calls will fail.');
   if (!GROUP_ID) console.error('  - ROBLOX_GROUP_ID');
   if (!API_KEY) console.error('  - ROBLOX_OPENCLOUD_API_KEY');
   if (!AUTH_TOKEN) console.error('  - API_AUTH_TOKEN');
-  process.exit(1);
+} else {
+  console.log('🚀 Server starting with all variables present...');
+  console.log(`📦 Group ID: ${GROUP_ID}`);
 }
-
-console.log('🚀 Server starting...');
-console.log(`📦 Group ID: ${GROUP_ID}`);
-console.log(`🔑 API Key: ${API_KEY ? 'set' : 'MISSING'}`);
-console.log(`🔐 Auth Token: ${AUTH_TOKEN ? 'set' : 'MISSING'}`);
 
 const OPENCLOUD_BASE = 'https://apis.roblox.com/cloud/v2';
 const openCloudHeaders = { 'x-api-key': API_KEY.trim() };
@@ -36,7 +33,7 @@ app.use('/utils/roblox', (req, res, next) => {
   next();
 });
 
-// ---------- Small helper for throwing errors with an HTTP status attached ----------
+// ---------- Small helper for throwing errors ----------
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
@@ -45,9 +42,6 @@ function httpError(status, message) {
 
 // ---------- SHARED HELPERS ----------
 
-// Roblox deprecated the old `/v1/users/search?keyword=` endpoint for reliable
-// exact-match lookups. The supported way to resolve a username -> userId is
-// POST /v1/usernames/users, which does an exact (optionally case-insensitive) match.
 async function getUserIdByUsername(username) {
   const response = await axios.post('https://users.roblox.com/v1/usernames/users', {
     usernames: [username],
@@ -93,17 +87,17 @@ async function getCurrentRoleId(membershipId) {
 }
 
 async function setMembershipRole(membershipId, roleId) {
+  // FIX: Added ?updateMask=role (Required by Roblox Open Cloud v2 for PATCH requests)
   await axios.patch(
-    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}`,
+    `${OPENCLOUD_BASE}/groups/${GROUP_ID}/memberships/${membershipId}?updateMask=role`,
     { role: `groups/${GROUP_ID}/roles/${roleId}` },
     { headers: openCloudHeaders }
   );
 }
 
-// Central error responder: uses the status attached by httpError()
-// when present, otherwise falls back to 500 for genuine server/API errors.
+// FIX: Correctly extracts the status code from Axios errors (error.response.status)
 function sendError(res, error, fallbackContext) {
-  const status = error.status || 500;
+  const status = error.response?.status || error.status || 500;
   const payload = error.response?.data || error.message;
   if (status === 500) {
     console.error(`❌ ${fallbackContext} error:`, payload);
@@ -124,7 +118,7 @@ app.get('/utils/roblox/test', async (req, res) => {
       message: 'API key works!'
     });
   } catch (error) {
-    res.status(500).json({
+    res.status(error.response?.status || 500).json({
       success: false,
       error: error.response?.data || error.message
     });
@@ -145,7 +139,8 @@ app.post('/utils/roblox/promote', async (req, res) => {
     const membershipId = await getMembershipId(userId);
     const currentRoleId = await getCurrentRoleId(membershipId);
 
-    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
+    // FIX: String cast prevents type mismatch bugs if Open Cloud returns ints vs strings
+    const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
     if (currentIdx === -1) throw httpError(500, 'Current role not found in group role list');
     if (currentIdx === roles.length - 1) {
       throw httpError(400, 'Already at highest rank');
@@ -178,7 +173,7 @@ app.post('/utils/roblox/demote', async (req, res) => {
     const membershipId = await getMembershipId(userId);
     const currentRoleId = await getCurrentRoleId(membershipId);
 
-    const currentIdx = roles.findIndex(r => r.id === currentRoleId);
+    const currentIdx = roles.findIndex(r => String(r.id) === String(currentRoleId));
     if (currentIdx === -1) throw httpError(500, 'Current role not found in group role list');
     if (currentIdx === 0) {
       throw httpError(400, 'Already at lowest rank');
